@@ -1,4 +1,4 @@
-#ComfierUI
+# ComfierUI
 
 This exists because i forget how to setup the ComfyUI server every time.
 
