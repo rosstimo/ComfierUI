@@ -1,0 +1,29 @@
+[Unit]
+Description=ComfyUI System Service
+After=network.target
+
+[Service]
+# Set the working directory to the ComfyUI installation path
+# WorkingDirectory=/your/path/to/ComfyUI_installation
+WorkingDirectory=/opt/ComfyUI
+
+# Command to start ComfyUI
+# ExecStart=python main.py
+ExecStart=run_ComfyUI_server.sh
+
+# Use a dedicated unprivileged user for security
+User=ComfyUI
+Group=ComfyUI
+
+# Restart the service automatically if it crashes
+Restart=always
+
+# Security enhancements (optional but recommended)
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
+
