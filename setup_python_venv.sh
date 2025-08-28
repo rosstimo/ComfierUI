@@ -26,7 +26,7 @@ source .venv/bin/activate || { echo "Failed to activate the virtual environment.
 pip install --upgrade pip || { echo "Failed to upgrade pip."; deactivate; cd ../; exit 1; }
 
 # Override torch, torchvision, and torchaudio with custom index URL
-pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu124/ || { echo "Failed to install PyTorch packages."; deactivate; cd ../; exit 1; }
+pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu128/ || { echo "Failed to install PyTorch packages."; deactivate; cd ../; exit 1; }
 
 # Check if requirements.txt exists and install the packages
 if [ -f "requirements.txt" ]; then

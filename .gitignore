@@ -1,3 +1,4 @@
+*~
 *.log
 custom_nodes/
 extramodels/
@@ -5,3 +6,6 @@ ipadapter/
 clip_vision/
 ComfyUI/
 ComfyUI-Manager/
+input/*
+output/*
+models/*
