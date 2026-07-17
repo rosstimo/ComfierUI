@@ -95,7 +95,11 @@ PY
 project_name="$(config_get COMPOSE_PROJECT_NAME comfierui)"
 bind_address="$(config_get COMFYUI_BIND_ADDRESS 127.0.0.1)"
 port="$(config_get COMFYUI_PORT 8188)"
-timezone="$(config_get TZ "$(detect_timezone)")"
+if [[ "${new_env}" == true ]]; then
+    timezone="$(detect_timezone)"
+else
+    timezone="$(config_get TZ "$(detect_timezone)")"
+fi
 data_setting="$(config_get COMFYUI_DATA_PATH ./data)"
 models_setting="$(config_get COMFYUI_MODELS_PATH ./data/models)"
 workflows_setting="$(config_get COMFYUI_WORKFLOWS_PATH ./data/workflows)"
