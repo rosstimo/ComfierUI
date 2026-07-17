@@ -1,7 +1,14 @@
 # Configuration reference
 
-Copy `.env.example` to `.env` through `scripts/init.sh`. `.env` is local and
-ignored by Git. Run `docker compose config` after every material change.
+`scripts/init.sh` generates a short local `.env` containing the normal settings
+and detected accelerator values. `.env.example` is the comprehensive reference
+for advanced overrides. `.env` is ignored by Git.
+
+Run `docker compose config` after every material change.
+
+Rerunning `scripts/init.sh` refreshes detected accelerator and identity values
+without deleting optional Compose layers such as an external network. Existing
+local choices, including `TZ`, paths, bind address, and port, are preserved.
 
 ## Compose selection
 
@@ -21,7 +28,12 @@ COMPOSE_FILE=compose.yaml:compose.cpu.yaml
 
 # NVIDIA plus an existing shared network
 COMPOSE_FILE=compose.yaml:compose.nvidia.yaml:compose.external-network.yaml
+COMFYUI_EXTERNAL_NETWORK=ai-services
 ```
+
+The external network must already exist. The accelerator layer is selected by
+initialization; other optional layers are preserved when initialization is run
+again.
 
 ## Accelerator and image
 
@@ -41,10 +53,12 @@ COMPOSE_FILE=compose.yaml:compose.nvidia.yaml:compose.external-network.yaml
 | `TORCHAUDIO_VERSION` | Torchaudio version |
 | `TORCH_INDEX_URL` | Matching PyTorch wheel index |
 
-Use an immutable release tag or commit for `COMFYUI_REF` when reproducible rebuilds matter. The default is an upstream release tag; `master` should be a deliberate test choice.
+Use an immutable release tag or commit for `COMFYUI_REF` when reproducible
+rebuilds matter. The default is an upstream release tag; `master` should be a
+deliberate test choice.
 
 The CUDA 13, CUDA 12, and CPU profile variables in `.env.example` are inputs to
-`scripts/init.sh`. The script copies the chosen values into
+`scripts/init.sh`. The script writes the selected values into the local `.env` as
 `COMFYUI_BASE_IMAGE` and `TORCH_INDEX_URL`.
 
 Treat the base image and PyTorch values as one compatibility set. Changing only
@@ -86,6 +100,9 @@ For multiple model roots, see `config/extra_model_paths.yaml.example` and
 | `COMFYUI_EXTERNAL_NETWORK` | Existing Docker network used only by its override |
 | `TZ` | Container timezone |
 
+Fresh installations detect the host timezone when possible. Existing `TZ`
+settings are not overwritten by later initialization runs.
+
 ## Manager
 
 | Variable | Purpose |
@@ -111,7 +128,7 @@ to make an unexplained installation error disappear.
 
 ## Shipped examples
 
-- `.env.example`: complete deployment values.
+- `.env.example`: comprehensive environment-variable reference.
 - `config/manager-config.ini.example`: Manager keys written by the entrypoint.
 - `config/extra_model_paths.yaml.example`: ComfyUI extra-model-path mapping.
 - `examples/compose.extra-model-paths.yaml`: mounts for the matching config.
