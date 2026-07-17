@@ -25,7 +25,7 @@ services:
 
     # Allows a shared host model library to retain its existing group ownership.
     group_add:
-      - "${COMFYUI_MODELS_GID:-${PGID:-1000}}"
+      - "${COMFYUI_MODELS_GID:-1000}"
 
     volumes:
       - ${COMFYUI_MODELS_PATH:-./data/models}:/opt/ComfyUI/models
