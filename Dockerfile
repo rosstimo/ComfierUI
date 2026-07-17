@@ -25,7 +25,9 @@ RUN apt-get update \
         ffmpeg \
         git \
         git-lfs \
+        libegl1 \
         libgl1 \
+        libgles2 \
         libglib2.0-0 \
         libgomp1 \
         pkg-config \
