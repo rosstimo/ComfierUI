@@ -51,12 +51,14 @@ http://127.0.0.1:8188
 ```
 
 That is the normal setup. `scripts/init.sh` detects a suitable NVIDIA profile
-when available and otherwise configures CPU mode.
+when available, otherwise configures CPU mode, detects the host timezone, and
+writes a short `.env` containing the settings a normal user may actually need to
+change. `.env.example` is the comprehensive advanced reference.
 
 ## Setup TL;DR
 
 ```bash
-# Create .env, detect hardware, and create persistent directories
+# Create a short .env, detect hardware, and create persistent directories
 bash scripts/init.sh
 
 # Check Docker, permissions, storage, Compose, and GPU access
