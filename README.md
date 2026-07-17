@@ -7,15 +7,29 @@ nodes, user state, inputs, outputs, and caches remain persistent outside it.
 ## What this repository is
 
 - A portable Linux deployment with repository-local storage by default.
-- A tested NVIDIA path with automatic GPU and compatibility-profile discovery.
-- A CPU configuration for installation, diagnostics, and small workloads.
+- An accelerator-profile architecture that can grow without changing the common
+  persistence, permissions, networking, or backup design.
+- A verified NVIDIA CUDA 13 deployment path.
+- Experimental NVIDIA CUDA 12.6 and CPU profiles awaiting broader hardware tests.
 - A non-root permissions model that also supports existing shared model stores.
 - Current built-in ComfyUI Manager, with the legacy interface available by choice.
 - Optional external Docker networking, extra model paths, and restic automation.
 - Documentation and validation intended to make local changes reviewable.
 
-It is not a universal container for every accelerator. AMD ROCm and Intel GPU
-support need their own tested images, devices, and PyTorch packages.
+AMD and Intel GPU profiles are not currently shipped. They require their own
+image, runtime devices, framework packages, Compose override, and successful
+workflow validation before being presented as usable configurations.
+
+## Support levels
+
+- **Verified:** built and exercised on real hardware with a saved output.
+- **Experimental:** implemented and statically validated, but not yet proven on
+  representative hardware and workflows.
+- **Planned:** recognized as a future backend, with no runnable profile shipped.
+
+The current verified profile is NVIDIA CUDA 13 on an RTX 4060 Ti. NVIDIA CUDA
+12.6 and CPU are experimental. AMD ROCm and Intel GPU acceleration are planned.
+See the [compatibility matrix](docs/COMPATIBILITY.md) for exact evidence.
 
 ## Requirements
 
@@ -49,10 +63,11 @@ reviewing [networking](docs/NETWORKING.md) and [security](docs/SECURITY.md).
 
 `bash scripts/init.sh` chooses the highest-VRAM NVIDIA GPU when possible:
 
-- CUDA 13 for compute capability 7.5 or newer with a 580+ driver.
-- CUDA 12.6 compatibility mode for older NVIDIA architectures or a 525-579
+- Verified CUDA 13 profile for compute capability 7.5 or newer with a 580+
   driver.
-- CPU when no supported NVIDIA profile is available.
+- Experimental CUDA 12.6 profile for older NVIDIA architectures or a 525-579
+  driver.
+- Experimental CPU profile when no configured NVIDIA profile is available.
 
 Explicit modes are also available:
 
@@ -63,7 +78,11 @@ bash scripts/init.sh nvidia-cuda12
 bash scripts/init.sh cpu
 ```
 
-See [GPU and compatibility](docs/GPU.md) and the
+On an AMD- or Intel-GPU system, automatic initialization currently selects CPU
+rather than pretending the GPU is supported. A real AMD or Intel profile should
+be added only with a dedicated implementation and test record.
+
+See [GPU and accelerator selection](docs/GPU.md) and the
 [compatibility matrix](docs/COMPATIBILITY.md).
 
 ## New storage or existing assets
