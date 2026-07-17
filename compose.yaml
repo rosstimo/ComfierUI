@@ -23,6 +23,8 @@ services:
       NVIDIA_VISIBLE_DEVICES: ${COMFYUI_GPU_DEVICE:?Set COMFYUI_GPU_DEVICE in .env}
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
       COMFYUI_MANAGER_LEGACY_UI: ${COMFYUI_MANAGER_LEGACY_UI:-false}
+      COMFYUI_MANAGER_SECURITY_LEVEL: ${COMFYUI_MANAGER_SECURITY_LEVEL:-normal}
+      COMFYUI_MANAGER_NETWORK_MODE: ${COMFYUI_MANAGER_NETWORK_MODE:-personal_cloud}
 
     # Allows a shared host model library to retain its existing group ownership.
     group_add:
