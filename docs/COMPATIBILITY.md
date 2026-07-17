@@ -6,8 +6,8 @@ Update it when a profile is tested on real hardware.
 | Profile | Base image | PyTorch index | Hardware rule | Status |
 |---|---|---|---|---|
 | NVIDIA CUDA 13 | CUDA 13 / Ubuntu 24.04 | `cu130` | Driver 580+, compute capability 7.5+ | Generalized `v0.28.0` deployment validated on an RTX 4060 Ti with driver 610.43.03 |
-| NVIDIA CUDA 12 | CUDA 12.6 / Ubuntu 24.04 | `cu126` | Driver 525+ | Implemented compatibility path; release test required |
-| CPU | Ubuntu 24.04 | `cpu` | Linux CPU | Implemented; release test required |
+| NVIDIA CUDA 12 | CUDA 12.6 / Ubuntu 24.04 | `cu126` | Driver 525+ | Implemented compatibility path; hardware validation pending |
+| CPU | Ubuntu 24.04 | `cpu` | Linux CPU | Implemented; hardware validation pending |
 | AMD ROCm | Not provided | Not provided | N/A | Not implemented |
 | Intel GPU | Not provided | Not provided | N/A | Not implemented |
 
@@ -32,6 +32,18 @@ image, custom nodes, and representative workflows are tested on it.
 
 Port 8190 was only an isolated review override. The generic deployment continues
 to use ComfyUI's standard host port 8188 by default.
+
+## Planned test targets
+
+The following systems are intended as future compatibility tests rather than
+release blockers:
+
+- Framework laptop
+- GPD Win Max 2
+
+For each system, record the actual host architecture, operating system, graphics
+hardware, selected accelerator profile, and representative workflow result at
+test time. Do not infer support merely from the product name.
 
 ## Why two NVIDIA profiles
 
