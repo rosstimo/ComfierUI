@@ -1,14 +1,28 @@
 # GPU and accelerator selection
 
-## Implemented modes
+## Support policy
 
-1. NVIDIA CUDA 13 for Turing-or-newer GPUs with a 580+ driver.
-2. NVIDIA CUDA 12.6 compatibility mode for Maxwell, Pascal, Volta, or hosts with
-   a 525-579 driver.
-3. CPU mode using the PyTorch CPU wheel index.
+ComfierUI keeps the common deployment accelerator-neutral where practical, but
+ships only accelerator profiles that have an actual implementation. Support is
+reported in three tiers:
 
-AMD ROCm and Intel GPU support require dedicated Compose layers, images, devices,
-and tested PyTorch packages. They are not silently mapped to CUDA or CPU.
+- **Verified:** real hardware and workflow evidence exists.
+- **Experimental:** runnable profile exists, but hardware coverage is incomplete.
+- **Planned:** no runnable profile is shipped yet.
+
+See [Compatibility](COMPATIBILITY.md) for current evidence.
+
+## Available profiles
+
+1. **NVIDIA CUDA 13, verified:** Turing-or-newer GPUs with a 580+ driver.
+2. **NVIDIA CUDA 12.6, experimental:** compatibility mode for Maxwell, Pascal,
+   Volta, or hosts with a 525-579 driver.
+3. **CPU, experimental:** PyTorch CPU wheels with no accelerator device mapping.
+
+AMD ROCm and Intel GPU acceleration are planned, not implemented. Each requires
+a dedicated image, runtime devices, framework packages, Compose override,
+preflight logic, and successful workflow testing. They are not silently mapped
+to CUDA, and automatic setup currently uses the CPU profile on those systems.
 
 ## Discovery
 
@@ -17,9 +31,13 @@ bash scripts/detect-gpu.sh
 bash scripts/init.sh auto
 ```
 
-Discovery lists index, UUID, model, VRAM, driver, and compute capability. The
-highest-VRAM GPU is selected by UUID. UUIDs are preferable to numeric indexes
-when enumeration can change.
+NVIDIA discovery lists index, UUID, model, VRAM, driver, and compute capability.
+The highest-VRAM NVIDIA GPU is selected by UUID. UUIDs are preferable to numeric
+indexes when enumeration can change.
+
+If no configured NVIDIA profile is available, automatic setup selects the
+experimental CPU profile and states that AMD and Intel GPU acceleration are not
+yet implemented.
 
 ## Explicit profile selection
 
@@ -46,6 +64,22 @@ container check:
 bash scripts/preflight.sh --skip-gpu-container-test
 ```
 
+## Adding another accelerator backend
+
+A new backend should be added as a separate profile rather than folded into the
+base Compose file. At minimum, it needs:
+
+- a backend-specific Compose override,
+- a suitable base image,
+- correct device exposure and runtime permissions,
+- matching framework packages,
+- initialization and preflight detection,
+- documentation of unsupported nodes or operators,
+- a successful saved-output workflow test.
+
+Only then should the profile move from planned to experimental. It becomes
+verified after the compatibility record includes real hardware evidence.
+
 ## Compatibility settings
 
 Change these together when creating another tested profile:
@@ -58,8 +92,8 @@ TORCHAUDIO_VERSION=...
 TORCH_INDEX_URL=...
 ```
 
-The profile values in `.env.example` are defaults, not a promise that every
-NVIDIA card or driver can use them.
+For non-PyTorch backends, introduce clearly named profile variables rather than
+reusing CUDA-specific values with a different meaning.
 
 ## Multiple GPUs
 
@@ -70,12 +104,13 @@ placement explicit. Multiple independent ComfyUI instances should use distinct:
 - `COMFYUI_PORT`
 - `COMFYUI_DATA_PATH`
 - `COMFYUI_WORKFLOWS_PATH`
-- GPU UUID
+- accelerator device identifier
 
 ## CPU mode
 
-CPU mode is valuable for setup validation and may run small workflows, but large
-diffusion models can be impractical. It is a fallback, not a performance claim.
+CPU mode is useful for setup validation and may run small workflows, but large
+diffusion models can be impractical. It is an experimental fallback, not a
+performance or broad-compatibility claim.
 
 ## Official references
 
