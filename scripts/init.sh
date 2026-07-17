@@ -281,6 +281,9 @@ ensure_directory "${data_path}"
 for directory in cache custom_nodes home input output temp user; do
     ensure_directory "${data_path}/${directory}"
 done
+# Pre-create the parent of the nested workflows bind mount. Otherwise Docker may
+# create it as root before the non-root ComfyUI process starts.
+ensure_directory "${data_path}/user/default"
 ensure_directory "${models_path}"
 ensure_directory "${workflows_path}"
 
