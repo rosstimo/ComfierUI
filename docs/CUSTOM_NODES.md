@@ -1,14 +1,67 @@
-# Custom nodes and ComfyUI Manager
+# Custom nodes, models, and ComfyUI Manager
+
+## Why ComfierUI defaults to the legacy Manager interface
+
+ComfyUI currently ships two Manager interfaces. ComfierUI enables the familiar
+legacy interface by default because it still provides the broadest convenience
+feature set, including **Install Models**, which searches the Manager catalog and
+downloads model files directly into the server-side model directory.
+
+The newer Manager interface is available, but some workflow-template model links
+are browser downloads. On a headless server that means the file lands on the
+computer running the browser rather than in the ComfyUI model directory.
+
+Use the default:
+
+```dotenv
+COMFYUI_MANAGER_LEGACY_UI=true
+```
+
+Opt into the newer interface:
+
+```dotenv
+COMFYUI_MANAGER_LEGACY_UI=false
+```
+
+Recreate the container after changing the value. No image rebuild is needed:
+
+```bash
+docker compose up -d --force-recreate
+```
+
+## Installing a model on the server
+
+With the default legacy interface:
+
+1. Open **Manager**.
+2. Select **Install Models**.
+3. Search for a checkpoint, LoRA, VAE, ControlNet, or other listed model.
+4. Review the destination model category.
+5. Select **Install**.
+6. Follow the container logs until the download finishes.
+7. Refresh ComfyUI's model lists or restart the container when needed.
+
+```bash
+docker compose logs -f comfyui
+```
+
+Manager downloads into `/opt/ComfyUI/models`, which is the host path configured
+by `COMFYUI_MODELS_PATH`. The default host location is `./data/models`.
+
+Manager's catalog is useful but not exhaustive. Models downloaded manually must
+be placed in the correct category below `COMFYUI_MODELS_PATH`, such as
+`checkpoints`, `loras`, `vae`, or `controlnet`.
 
 ## Persistence model
 
-Manager changes two persistent areas:
+Manager changes three persistent areas:
 
+- model files under `COMFYUI_MODELS_PATH`,
 - node-pack repositories under `COMFYUI_DATA_PATH/custom_nodes`,
 - Python packages under the `comfyui-python` named volume.
 
-Both survive a normal image rebuild. ComfyUI core itself is image-owned and is
-updated by rebuilding, not by Manager.
+All three survive a normal image rebuild. ComfyUI core itself is image-owned and
+is updated by rebuilding, not by Manager.
 
 ## Installing nodes
 
@@ -35,15 +88,6 @@ COMFYUI_MANAGER_NETWORK_MODE=personal_cloud
 These defaults support registered pack installation for a self-hosted personal
 instance. Lower settings allow broader execution. Do not change them without
 understanding the rejected operation.
-
-## Current and legacy interfaces
-
-```dotenv
-COMFYUI_MANAGER_LEGACY_UI=false
-```
-
-Set `true` when the familiar legacy interface is temporarily useful, then
-recreate the container. No image rebuild is needed.
 
 ## Dependency troubleshooting
 
@@ -75,6 +119,7 @@ actually require.
 ## Official references
 
 - Manager installation and launch flags: https://docs.comfy.org/manager/install
-- Current Manager interface: https://docs.comfy.org/manager/pack-management
-- Manager configuration and risk levels: https://docs.comfy.org/manager/configuration
+- New Manager interface: https://docs.comfy.org/manager/pack-management
+- Manager configuration and model download paths: https://docs.comfy.org/manager/configuration
+- Manager repository and legacy Install Models documentation: https://github.com/Comfy-Org/ComfyUI-Manager
 - Custom-node installation and trust guidance: https://docs.comfy.org/installation/install_custom_node
