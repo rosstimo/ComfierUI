@@ -181,9 +181,16 @@ See [Backup and restore](docs/BACKUP_RESTORE.md) before enabling timers.
 - [Repository file reference](docs/FILE_REFERENCE.md)
 - [Release checklist](docs/RELEASE_CHECKLIST.md)
 
+## Project history
+
+The existing Git history is intentionally retained. The earlier host-based
+installation, workflow experiments, and Docker overhaul show how the project
+evolved. Files removed from the current tree may still exist in older commits.
+Any credential that was ever committed must remain rotated and invalid.
+
 ## License
 
-A license must be selected before the generalized deployment replaces `main`.
-Public visibility alone does not grant broad reuse rights. The release checklist
-keeps this as an explicit owner decision rather than silently choosing legal
-terms.
+ComfierUI's repository code and documentation are available under the
+[MIT License](LICENSE). This permissive license allows broad use, modification,
+redistribution, sublicensing, and commercial use while requiring preservation of
+the copyright and license notice.
