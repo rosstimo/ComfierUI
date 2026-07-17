@@ -1,0 +1,62 @@
+name: comfierui
+
+services:
+  comfyui:
+    image: local/comfierui:${COMFYUI_IMAGE_TAG:-latest}
+    build:
+      context: .
+      args:
+        COMFYUI_REF: ${COMFYUI_REF:-master}
+        PUID: ${PUID:-1000}
+        PGID: ${PGID:-1000}
+    container_name: comfierui
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    shm_size: ${COMFYUI_SHM_SIZE:-8gb}
+
+    ports:
+      - "${COMFYUI_BIND_ADDRESS:-0.0.0.0}:${COMFYUI_PORT:-8189}:8188"
+
+    environment:
+      TZ: ${TZ:-America/Boise}
+      NVIDIA_VISIBLE_DEVICES: ${COMFYUI_GPU_DEVICE:?Set COMFYUI_GPU_DEVICE in .env}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+
+    volumes:
+      - ./data/models:/opt/ComfyUI/models
+      - ./data/custom_nodes:/opt/ComfyUI/custom_nodes
+      - ./data/user:/opt/ComfyUI/user
+      - ./data/input:/opt/ComfyUI/input
+      - ./data/output:/opt/ComfyUI/output
+      - ./data/temp:/opt/ComfyUI/temp
+      - ./data/cache:/data/cache
+      - ./data/home:/data/home
+      - ./workflows:/opt/ComfyUI/user/default/workflows
+      - comfyui-python:/opt/venv
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids:
+                - ${COMFYUI_GPU_DEVICE:?Set COMFYUI_GPU_DEVICE in .env}
+              capabilities:
+                - gpu
+
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - --fail
+        - --silent
+        - --show-error
+        - http://127.0.0.1:8188/system_stats
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+volumes:
+  comfyui-python:
