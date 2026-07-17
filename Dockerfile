@@ -106,4 +106,4 @@ ENV HOME=/data/home \
 EXPOSE 8188
 
 ENTRYPOINT ["/usr/local/bin/comfierui-entrypoint"]
-CMD ["--listen", "0.0.0.0", "--port", "8188", "--enable-manager", "--enable-manager-legacy-ui", "--dont-print-server"]
+CMD ["--listen", "0.0.0.0", "--port", "8188", "--enable-manager", "--dont-print-server"]
