@@ -103,6 +103,7 @@ fi
 data_setting="$(config_get COMFYUI_DATA_PATH ./data)"
 models_setting="$(config_get COMFYUI_MODELS_PATH ./data/models)"
 workflows_setting="$(config_get COMFYUI_WORKFLOWS_PATH ./data/workflows)"
+manager_legacy_ui="$(config_get COMFYUI_MANAGER_LEGACY_UI true)"
 current_compose_file="$(config_get COMPOSE_FILE compose.yaml)"
 
 cuda13_base="$(config_get COMFYUI_CUDA13_BASE_IMAGE nvidia/cuda:13.0.0-base-ubuntu24.04)"
@@ -219,6 +220,10 @@ COMFYUI_DATA_PATH=${data_setting}
 COMFYUI_MODELS_PATH=${models_setting}
 COMFYUI_WORKFLOWS_PATH=${workflows_setting}
 
+# Manager interface
+# true provides server-side Install Models; false selects the newer interface
+COMFYUI_MANAGER_LEGACY_UI=${manager_legacy_ui}
+
 # Detected accelerator configuration
 COMPOSE_FILE=${selected_compose_file}
 COMFYUI_ACCELERATOR=${selected_accelerator}
@@ -255,6 +260,9 @@ else
     fi
     env_set COMFYUI_BASE_IMAGE "${selected_base_image}"
     env_set TORCH_INDEX_URL "${selected_torch_index}"
+    if [[ -z "$(env_get COMFYUI_MANAGER_LEGACY_UI "" .env)" ]]; then
+        env_set COMFYUI_MANAGER_LEGACY_UI "${manager_legacy_ui}"
+    fi
     if [[ -z "$(env_get TZ "" .env)" ]]; then
         env_set TZ "${timezone}"
     fi
