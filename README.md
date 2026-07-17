@@ -10,6 +10,7 @@ This branch replaces the old host virtual environment, ComfyUI submodule, separa
 - Installs CUDA-enabled PyTorch inside the image.
 - Installs the Manager dependencies supplied by ComfyUI.
 - Starts ComfyUI with `--enable-manager`.
+- Uses the current Manager interface by default, with the legacy interface available as an option.
 - Pins the container to a selected NVIDIA GPU UUID.
 - Runs ComfyUI as the invoking host user's UID and GID.
 - Keeps runtime data outside the image under `data/`.
@@ -55,7 +56,7 @@ The initialization script:
 2. Copies `.env.example` to `.env` when needed.
 3. Selects the detected NVIDIA GPU with the most VRAM.
 4. Records the invoking user's UID and GID.
-5. validates the resolved Compose configuration.
+5. Validates the resolved Compose configuration.
 
 Review the generated configuration:
 
@@ -117,6 +118,28 @@ nvidia-smi --query-gpu=index,uuid,name,memory.total --format=csv
 ```
 
 Use the UUID rather than a numeric index so device selection remains stable if enumeration order changes.
+
+## Manager interface mode
+
+The current ComfyUI Manager interface is the default:
+
+```dotenv
+COMFYUI_MANAGER_LEGACY_UI=false
+```
+
+To temporarily use the familiar legacy Manager interface, set:
+
+```dotenv
+COMFYUI_MANAGER_LEGACY_UI=true
+```
+
+Apply a mode change without rebuilding the image:
+
+```bash
+docker compose up -d --force-recreate comfyui
+```
+
+The startup log reports either `ComfyUI Manager UI: current` or `ComfyUI Manager UI: legacy`.
 
 ## Legacy installation reconnaissance
 
