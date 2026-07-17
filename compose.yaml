@@ -22,6 +22,7 @@ services:
       TZ: ${TZ:-America/Boise}
       NVIDIA_VISIBLE_DEVICES: ${COMFYUI_GPU_DEVICE:?Set COMFYUI_GPU_DEVICE in .env}
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      COMFYUI_MANAGER_LEGACY_UI: ${COMFYUI_MANAGER_LEGACY_UI:-false}
 
     # Allows a shared host model library to retain its existing group ownership.
     group_add:
