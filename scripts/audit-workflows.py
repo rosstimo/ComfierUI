@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Audit ComfyUI workflow dependencies against a running ComfyUI instance.
 
-Uses only the Python standard library. It reports node types referenced by each
-workflow that are not currently registered by ComfyUI, and flags token-shaped
-or secret-keyed values without printing the full value.
+Uses only the Python standard library. It reports active node types referenced by
+workflows that are not currently registered by ComfyUI, separates nodes that are
+muted or bypassed, and flags token-shaped or secret-keyed values without printing
+the full value.
 """
 
 from __future__ import annotations
@@ -23,6 +24,15 @@ FRONTEND_ONLY_NODE_TYPES = {
     "PrimitiveNode",
     "Reroute",
 }
+
+NODE_MODE_NAMES = {
+    0: "always",
+    1: "on event",
+    2: "never/muted",
+    3: "on trigger",
+    4: "bypass",
+}
+INACTIVE_NODE_MODES = {2, 4}
 
 TOKEN_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("Hugging Face token", re.compile(r"\bhf_[A-Za-z0-9]{20,}\b")),
@@ -87,6 +97,42 @@ def iter_nodes(value: Any) -> Iterator[dict[str, Any]]:
             yield from iter_nodes(child)
 
 
+def node_mode(node: dict[str, Any]) -> int:
+    value = node.get("mode", 0)
+    return value if isinstance(value, int) else 0
+
+
+def node_descriptor(node: dict[str, Any]) -> str:
+    mode = node_mode(node)
+    mode_name = NODE_MODE_NAMES.get(mode, "unknown")
+    return f"id={node.get('id', '?')} mode={mode} ({mode_name})"
+
+
+def missing_node_occurrences(
+    data: Any,
+    registered: set[str],
+) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    active: dict[str, list[str]] = {}
+    inactive: dict[str, list[str]] = {}
+
+    for node in iter_nodes(data):
+        node_type = node["type"]
+        if node_type in FRONTEND_ONLY_NODE_TYPES or node_type in registered:
+            continue
+
+        target = inactive if node_mode(node) in INACTIVE_NODE_MODES else active
+        target.setdefault(node_type, []).append(node_descriptor(node))
+
+    # A type is required when at least one occurrence is active, even if another
+    # occurrence of the same type is bypassed elsewhere in the workflow.
+    inactive_only = {
+        node_type: occurrences
+        for node_type, occurrences in inactive.items()
+        if node_type not in active
+    }
+    return active, inactive_only
+
+
 def redact(value: str) -> str:
     if len(value) <= 10:
         return f"<redacted length={len(value)}>"
@@ -127,6 +173,13 @@ def workflow_paths(root: Path, selected: list[str]) -> list[Path]:
     return paths
 
 
+def print_occurrences(title: str, occurrences: dict[str, list[str]]) -> None:
+    print(title)
+    for node_type in sorted(occurrences):
+        details = "; ".join(occurrences[node_type])
+        print(f"    - {node_type} [{details}]")
+
+
 def main() -> int:
     args = parse_args()
 
@@ -140,8 +193,9 @@ def main() -> int:
     print(f"Registered ComfyUI node types: {len(registered)}")
     print(f"Workflow files examined: {len(paths)}")
 
-    workflows_with_missing = 0
-    all_missing: set[str] = set()
+    workflows_with_active_missing = 0
+    all_active_missing: set[str] = set()
+    all_inactive_only_missing: set[str] = set()
     secret_count = 0
 
     for path in paths:
@@ -151,27 +205,27 @@ def main() -> int:
             print(f"\n{path}: ERROR: {exc}")
             continue
 
-        node_types = {
-            node["type"]
-            for node in iter_nodes(data)
-            if node["type"] not in FRONTEND_ONLY_NODE_TYPES
-        }
-        missing = sorted(node_types - registered)
+        active_missing, inactive_only_missing = missing_node_occurrences(data, registered)
         secrets = list(iter_secret_findings(data))
 
-        if not missing and not secrets and args.workflow:
+        if not active_missing and not inactive_only_missing and not secrets and args.workflow:
             print(f"\n{path}: no missing node types or obvious secret values")
             continue
 
-        if missing or secrets:
+        if active_missing or inactive_only_missing or secrets:
             print(f"\n{path}")
 
-        if missing:
-            workflows_with_missing += 1
-            all_missing.update(missing)
-            print("  Missing node types:")
-            for node_type in missing:
-                print(f"    - {node_type}")
+        if active_missing:
+            workflows_with_active_missing += 1
+            all_active_missing.update(active_missing)
+            print_occurrences("  Active missing node types:", active_missing)
+
+        if inactive_only_missing:
+            all_inactive_only_missing.update(inactive_only_missing)
+            print_occurrences(
+                "  Missing only in muted or bypassed nodes:",
+                inactive_only_missing,
+            )
 
         if secrets:
             secret_count += len(secrets)
@@ -180,13 +234,23 @@ def main() -> int:
                 print(f"    - {label}: {location}: {value}")
 
     print("\n=== Summary ===")
-    print(f"Workflows with missing node types: {workflows_with_missing}")
-    print(f"Unique missing node types: {len(all_missing)}")
+    print(f"Workflows with active missing node types: {workflows_with_active_missing}")
+    print(f"Unique active missing node types: {len(all_active_missing)}")
+    print(
+        "Unique missing types used only by muted/bypassed nodes: "
+        f"{len(all_inactive_only_missing - all_active_missing)}"
+    )
     print(f"Possible secret findings: {secret_count}")
 
-    if all_missing:
-        print("\nAll missing node types:")
-        for node_type in sorted(all_missing):
+    if all_active_missing:
+        print("\nAll active missing node types:")
+        for node_type in sorted(all_active_missing):
+            print(f"  - {node_type}")
+
+    inactive_summary = all_inactive_only_missing - all_active_missing
+    if inactive_summary:
+        print("\nMissing only in muted or bypassed nodes:")
+        for node_type in sorted(inactive_summary):
             print(f"  - {node_type}")
 
     return 2 if secret_count else 0
