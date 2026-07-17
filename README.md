@@ -11,6 +11,7 @@ This branch replaces the old host virtual environment, ComfyUI submodule, separa
 - Installs the Manager dependencies supplied by ComfyUI.
 - Starts ComfyUI with `--enable-manager`.
 - Uses the current Manager interface by default, with the legacy interface available as an option.
+- Configures Manager policy explicitly for a remotely accessed personal deployment.
 - Pins the container to a selected NVIDIA GPU UUID.
 - Runs ComfyUI as the invoking host user's UID and GID.
 - Keeps runtime data outside the image under `data/`.
@@ -140,6 +141,19 @@ docker compose up -d --force-recreate comfyui
 ```
 
 The startup log reports either `ComfyUI Manager UI: current` or `ComfyUI Manager UI: legacy`.
+
+## Manager security policy
+
+ComfyUI Manager applies stricter controls when ComfyUI listens on a non-loopback address. This deployment makes the relevant settings explicit:
+
+```dotenv
+COMFYUI_MANAGER_SECURITY_LEVEL=normal
+COMFYUI_MANAGER_NETWORK_MODE=personal_cloud
+```
+
+For this personal deployment, those values permit installation and updates of registered node packs while retaining the normal security restrictions on higher-risk Manager actions. The entrypoint writes the values into `data/user/__manager/config.ini` on every container start so the runtime policy matches `.env`.
+
+Arbitrary Git URL installation and arbitrary pip installation remain disabled by Manager unless separately enabled in its config. Do not enable those features casually on a remotely reachable instance.
 
 ## Legacy installation reconnaissance
 
