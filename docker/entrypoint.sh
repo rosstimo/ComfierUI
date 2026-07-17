@@ -50,6 +50,30 @@ if [[ "${image_build_id}" != "${venv_build_id}" ]]; then
     printf '%s\n' "${image_build_id}" > "${venv_build_id_file}"
 fi
 
+legacy_manager_ui="${COMFYUI_MANAGER_LEGACY_UI:-false}"
+case "${legacy_manager_ui,,}" in
+    1|true|yes|on)
+        legacy_arg_present=false
+        for arg in "$@"; do
+            if [[ "${arg}" == "--enable-manager-legacy-ui" ]]; then
+                legacy_arg_present=true
+                break
+            fi
+        done
+        if [[ "${legacy_arg_present}" == false ]]; then
+            set -- "$@" --enable-manager-legacy-ui
+        fi
+        echo "ComfyUI Manager UI: legacy"
+        ;;
+    0|false|no|off|"")
+        echo "ComfyUI Manager UI: current"
+        ;;
+    *)
+        echo "ERROR: COMFYUI_MANAGER_LEGACY_UI must be true or false, got: ${legacy_manager_ui}" >&2
+        exit 1
+        ;;
+esac
+
 echo "ComfyUI commit: $(< /opt/comfyui-commit)"
 echo "Visible NVIDIA device(s): ${NVIDIA_VISIBLE_DEVICES:-not constrained}"
 
