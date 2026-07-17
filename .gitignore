@@ -1,5 +1,8 @@
 *~
 *.log
+.env
+
+data/
 custom_nodes/
 extramodels/
 ipadapter/
