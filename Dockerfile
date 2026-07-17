@@ -34,8 +34,20 @@ RUN apt-get update \
         python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd --gid "${PGID}" comfy \
-    && useradd --uid "${PUID}" --gid "${PGID}" --create-home --shell /bin/bash comfy
+# Ubuntu CUDA base images may already contain UID/GID 1000. Reuse numeric
+# identities when present and create only the missing passwd/group entries.
+RUN if ! getent group "${PGID}" >/dev/null; then \
+        groupadd --gid "${PGID}" comfy; \
+    fi \
+    && if ! getent passwd "${PUID}" >/dev/null; then \
+        useradd \
+            --uid "${PUID}" \
+            --gid "${PGID}" \
+            --no-create-home \
+            --home-dir /data/home \
+            --shell /bin/bash \
+            comfy; \
+    fi
 
 RUN git clone "${COMFYUI_REPO}" /opt/ComfyUI \
     && cd /opt/ComfyUI \
@@ -78,11 +90,11 @@ RUN printf 'PYTORCH_VERSION=%s\nTORCHVISION_VERSION=%s\nTORCHAUDIO_VERSION=%s\nT
         /opt/ComfyUI/output \
         /opt/ComfyUI/temp \
         /opt/ComfyUI/user/default/workflows \
-    && chown -R comfy:comfy /data /opt/venv
+    && chown -R "${PUID}:${PGID}" /data /opt/venv
 
 COPY --chmod=0755 docker/entrypoint.sh /usr/local/bin/comfierui-entrypoint
 
-USER comfy
+USER ${PUID}:${PGID}
 WORKDIR /opt/ComfyUI
 
 ENV HOME=/data/home \
