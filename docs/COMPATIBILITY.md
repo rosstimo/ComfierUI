@@ -1,19 +1,29 @@
 # Compatibility matrix
 
-This file distinguishes implemented configuration from verified operation.
-Update it when a profile is tested on real hardware.
+This repository separates **verified**, **experimental**, and **planned**
+accelerator support. A profile is not called supported merely because a base
+image or package repository exists.
 
-| Profile | Base image | PyTorch index | Hardware rule | Status |
+## Support levels
+
+- **Verified:** built and exercised on real hardware with successful ComfyUI
+  startup, model loading, workflow execution, and saved output.
+- **Experimental:** runnable configuration is implemented and statically
+  validated, but representative hardware testing is incomplete.
+- **Planned:** backend is recognized, but no runnable Compose profile is shipped.
+
+| Profile | Tier | Base image | Framework source | Status |
 |---|---|---|---|---|
-| NVIDIA CUDA 13 | CUDA 13 / Ubuntu 24.04 | `cu130` | Driver 580+, compute capability 7.5+ | Generalized `v0.28.0` deployment validated on an RTX 4060 Ti with driver 610.43.03 |
-| NVIDIA CUDA 12 | CUDA 12.6 / Ubuntu 24.04 | `cu126` | Driver 525+ | Implemented compatibility path; hardware validation pending |
-| CPU | Ubuntu 24.04 | `cpu` | Linux CPU | Implemented; hardware validation pending |
-| AMD ROCm | Not provided | Not provided | N/A | Not implemented |
-| Intel GPU | Not provided | Not provided | N/A | Not implemented |
+| NVIDIA CUDA 13 | Verified | CUDA 13 / Ubuntu 24.04 | PyTorch `cu130` | Validated on RTX 4060 Ti with driver 610.43.03 |
+| NVIDIA CUDA 12.6 | Experimental | CUDA 12.6 / Ubuntu 24.04 | PyTorch `cu126` | Implemented compatibility path; hardware validation pending |
+| CPU | Experimental | Ubuntu 24.04 | PyTorch CPU wheels | Implemented fallback; representative workflow validation pending |
+| AMD ROCm | Planned | Not provided | Not selected | No image, device mapping, or Compose profile shipped |
+| Intel GPU | Planned | Not provided | Not selected | No image, device mapping, or Compose profile shipped |
 
-The image and wheel indexes support Linux x86_64 and may publish arm64 artifacts,
-but the generalized release must not claim an architecture until the complete
-image, custom nodes, and representative workflows are tested on it.
+The common Compose design is accelerator-neutral where practical: persistence,
+permissions, networking, Manager state, and backups do not depend on the GPU
+vendor. Accelerator-specific images, devices, environment variables, and
+framework packages belong in separate overrides.
 
 ## Verified test records
 
@@ -41,28 +51,35 @@ release blockers:
 - Framework laptop
 - GPD Win Max 2
 
-For each system, record the actual host architecture, operating system, graphics
-hardware, selected accelerator profile, and representative workflow result at
-test time. Do not infer support merely from the product name.
+For each system, record the actual host architecture, operating system, CPU,
+graphics hardware, available runtime, selected accelerator profile, and
+representative workflow result. Do not infer Intel or AMD acceleration support
+merely from a product name. Until a dedicated GPU profile is implemented, these
+systems use the experimental CPU profile.
 
-## Why two NVIDIA profiles
+## Promotion criteria
+
+Promote a profile from experimental to verified only after documenting:
+
+- host architecture and Linux distribution,
+- exact accelerator and driver/runtime version,
+- base image and framework package versions,
+- resolved ComfyUI commit,
+- preflight and container health,
+- one core workflow with saved output,
+- one representative custom-node workflow when practical,
+- restart and rebuild persistence,
+- any backend-specific limitations.
+
+Adding AMD or Intel GPU acceleration requires more than documentation. It needs a
+separate Compose override, suitable image, device exposure, framework packages,
+preflight checks, and a real test record.
+
+## NVIDIA profile split
 
 CUDA 13 removed Maxwell, Pascal, and Volta offline compilation and library
 support. Those architectures remain on the CUDA 12 compatibility path. CUDA 13
 also requires a newer driver series. Initialization examines the highest-VRAM
-GPU's compute capability and driver before choosing a profile.
-
-## Recording a test
-
-For each validated host, record:
-
-- host architecture and Linux distribution,
-- GPU model and compute capability,
-- NVIDIA driver,
-- selected base image and PyTorch versions,
-- resolved ComfyUI commit,
-- one core workflow and one representative custom-node workflow,
-- Manager installation and restart persistence,
-- backup and staged restore result.
+NVIDIA GPU's compute capability and driver before choosing a profile.
 
 Do not replace compatibility evidence with “latest worked once.”
