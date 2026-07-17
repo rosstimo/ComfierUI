@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# Keep files created in shared bind mounts writable by the configured group.
+umask 0002
+
 readonly comfy_root=/opt/ComfyUI
 readonly venv_root=/opt/venv
 readonly image_build_id_file=/opt/comfierui-build-id
