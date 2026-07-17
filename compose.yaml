@@ -27,7 +27,9 @@ services:
       TZ: "${TZ:-Etc/UTC}"
       COMFYUI_ACCELERATOR: "${COMFYUI_ACCELERATOR:-cpu}"
       COMFYUI_MANAGER_ENABLED: "${COMFYUI_MANAGER_ENABLED:-true}"
-      COMFYUI_MANAGER_LEGACY_UI: "${COMFYUI_MANAGER_LEGACY_UI:-false}"
+      # The legacy interface currently includes server-side model search and
+      # installation. Set false to opt into the newer, more limited interface.
+      COMFYUI_MANAGER_LEGACY_UI: "${COMFYUI_MANAGER_LEGACY_UI:-true}"
       COMFYUI_MANAGER_SECURITY_LEVEL: "${COMFYUI_MANAGER_SECURITY_LEVEL:-normal}"
       COMFYUI_MANAGER_NETWORK_MODE: "${COMFYUI_MANAGER_NETWORK_MODE:-personal_cloud}"
       COMFYUI_EXTRA_ARGS: "${COMFYUI_EXTRA_ARGS:-}"
