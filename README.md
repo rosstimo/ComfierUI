@@ -1,94 +1,125 @@
 # ComfierUI
 
-A version-pinned Docker Compose deployment for self-hosted ComfyUI. ComfyUI core,
-PyTorch, and system libraries live in a built image. Models, workflows, custom
-nodes, user state, inputs, outputs, and caches remain persistent outside it.
+A Docker Compose setup for people who want to **use ComfyUI without rebuilding
+their installation every time an update gets spicy**.
 
-## What this repository is
+ComfierUI keeps ComfyUI, PyTorch, and system dependencies in a version-pinned
+container while keeping your models, workflows, custom nodes, inputs, outputs,
+and settings persistent on the host.
 
-- A portable Linux deployment with repository-local storage by default.
-- An accelerator-profile architecture that can grow without changing the common
-  persistence, permissions, networking, or backup design.
-- A verified NVIDIA CUDA 13 deployment path.
-- Experimental NVIDIA CUDA 12.6 and CPU profiles awaiting broader hardware tests.
-- A non-root permissions model that also supports existing shared model stores.
-- Current built-in ComfyUI Manager, with the legacy interface available by choice.
-- Optional external Docker networking, extra model paths, and restic automation.
-- Documentation and validation intended to make local changes reviewable.
+The goal is simple:
 
-AMD and Intel GPU profiles are not currently shipped. They require their own
-image, runtime devices, framework packages, Compose override, and successful
-workflow validation before being presented as usable configurations.
+- easier first-time setup,
+- predictable updates,
+- fewer dependency pileups,
+- straightforward backup and restore,
+- and a clean way to reuse an existing model library.
 
-## Support levels
+The goal is not to make ComfyUI boring. It is to make **maintaining** ComfyUI
+boring.
 
-- **Verified:** built and exercised on real hardware with a saved output.
-- **Experimental:** implemented and statically validated, but not yet proven on
-  representative hardware and workflows.
-- **Planned:** recognized as a future backend, with no runnable profile shipped.
+## Quick start
 
-The current verified profile is NVIDIA CUDA 13 on an RTX 4060 Ti. NVIDIA CUDA
-12.6 and CPU are experimental. AMD ROCm and Intel GPU acceleration are planned.
-See the [compatibility matrix](docs/COMPATIBILITY.md) for exact evidence.
-
-## Requirements
+### Requirements
 
 - Linux
 - Docker Engine with the Docker Compose v2 plugin
 - Git
-- Python 3 for the host-side helper scripts
-- NVIDIA driver and NVIDIA Container Toolkit for NVIDIA mode
-- Sufficient storage for the image, models, custom nodes, and generated assets
+- Python 3
+- NVIDIA driver and NVIDIA Container Toolkit when using an NVIDIA GPU
 
-## Quick start
+### Install
 
-Run initialization as the non-root user that should own the persistent files:
+Run this as the normal user who should own the ComfyUI files:
 
 ```bash
 git clone https://github.com/rosstimo/ComfierUI.git
 cd ComfierUI
+
 bash scripts/init.sh
 $EDITOR .env
 bash scripts/preflight.sh
+
 docker compose build --pull comfyui
 docker compose up -d
-docker compose ps
 ```
 
-Open `http://127.0.0.1:8188` on the host. For another machine, use an SSH tunnel,
-an authenticated reverse proxy, or deliberately change the bind address after
-reviewing [networking](docs/NETWORKING.md) and [security](docs/SECURITY.md).
+Open:
 
-## Accelerator selection
+```text
+http://127.0.0.1:8188
+```
 
-`bash scripts/init.sh` chooses the highest-VRAM NVIDIA GPU when possible:
+That is the normal setup. `scripts/init.sh` detects a suitable NVIDIA profile
+when available and otherwise configures CPU mode.
 
-- Verified CUDA 13 profile for compute capability 7.5 or newer with a 580+
-  driver.
-- Experimental CUDA 12.6 profile for older NVIDIA architectures or a 525-579
-  driver.
-- Experimental CPU profile when no configured NVIDIA profile is available.
-
-Explicit modes are also available:
+## Setup TL;DR
 
 ```bash
-bash scripts/init.sh auto
-bash scripts/init.sh nvidia-cuda13
-bash scripts/init.sh nvidia-cuda12
-bash scripts/init.sh cpu
+# Create .env, detect hardware, and create persistent directories
+bash scripts/init.sh
+
+# Check Docker, permissions, storage, Compose, and GPU access
+bash scripts/preflight.sh
+
+# Build and start
+docker compose build --pull comfyui
+docker compose up -d
+
+# Confirm it is alive
+docker compose ps
+docker compose logs --tail=100 comfyui
 ```
 
-On an AMD- or Intel-GPU system, automatic initialization currently selects CPU
-rather than pretending the GPU is supported. A real AMD or Intel profile should
-be added only with a dedicated implementation and test record.
+## Maintenance TL;DR
 
-See [GPU and accelerator selection](docs/GPU.md) and the
-[compatibility matrix](docs/COMPATIBILITY.md).
+```bash
+# Start
+docker compose up -d
 
-## New storage or existing assets
+# Status
+docker compose ps
 
-Fresh installs use `./data`. Existing installations can reuse their libraries
-without copying them:
+# Follow logs
+docker compose logs -f comfyui
+
+# Restart ComfyUI
+docker compose restart comfyui
+
+# Stop without deleting persistent data
+docker compose stop comfyui
+
+# Update this repo, rebuild, and recreate the container
+bash scripts/update.sh
+```
+
+Do not casually run `docker compose down -v`. The `-v` removes the persistent
+Python environment used by custom nodes.
+
+## Why updates are less painful
+
+ComfyUI core is built into the image at a pinned release. Updating means building
+a new image rather than modifying the running installation in place.
+
+Your important state stays outside the image:
+
+- models,
+- workflows,
+- custom nodes,
+- ComfyUI and Manager settings,
+- inputs and outputs,
+- caches,
+- custom-node Python packages.
+
+That separation makes rollback, rebuilding, and troubleshooting much less
+mysterious. Custom nodes can still break things because custom nodes are tiny
+Python roommates with opinions, but the damage is easier to isolate.
+
+## Use existing models and workflows
+
+Fresh installs store everything under `./data`.
+
+To reuse an existing library, edit `.env`:
 
 ```dotenv
 COMFYUI_MODELS_PATH=/absolute/path/to/models
@@ -96,120 +127,121 @@ COMFYUI_WORKFLOWS_PATH=/absolute/path/to/workflows
 COMFYUI_SHARED_GID=1234
 ```
 
-After changing paths:
+Then check access before starting:
 
 ```bash
 bash scripts/check-permissions.sh
 bash scripts/preflight.sh --skip-gpu-container-test
 ```
 
-Compose does not create missing bind paths for you. This prevents accidental
-root-owned directories. `scripts/init.sh` creates missing paths as the invoking
-user and leaves existing external libraries unchanged.
+The setup will not silently create missing bind-mount paths as root. A typo fails
+loudly instead of leaving a weird permissions souvenir.
 
-## Optional existing Docker network
+See [Permissions](docs/PERMISSIONS.md) and
+[Migration](docs/MIGRATION.md) for existing installations.
 
-A normal deployment needs only its private project network. To join another
-network, such as an AI service stack:
+## ComfyUI Manager and custom nodes
+
+The current built-in Manager interface is enabled by default. Custom-node code
+and its Python dependencies persist across normal image rebuilds.
+
+After installing or updating nodes:
+
+```bash
+docker compose restart comfyui
+docker compose logs --since=5m comfyui
+```
+
+See [Custom nodes and Manager](docs/CUSTOM_NODES.md) for policy settings,
+dependency repair, and clean venv recovery.
+
+## Optional shared Docker network
+
+A normal installation uses its own private Docker network.
+
+To join an existing network such as `ai-services`, edit `.env`:
 
 ```dotenv
 COMPOSE_FILE=compose.yaml:compose.nvidia.yaml:compose.external-network.yaml
 COMFYUI_EXTERNAL_NETWORK=ai-services
 ```
 
-```bash
-docker network create ai-services  # only when it does not already exist
-docker compose up -d --force-recreate
+Other containers on that network can reach ComfyUI at:
+
+```text
+http://comfyui:8188
 ```
 
-Other containers on that network use the service DNS name `comfyui` and
-container port `8188`.
-
-## Extra model roots
-
-One complete model library through `COMFYUI_MODELS_PATH` is simplest. When model
-categories are spread across several roots, copy and edit both examples:
-
-```bash
-cp config/extra_model_paths.yaml.example config/extra_model_paths.yaml
-cp examples/compose.extra-model-paths.yaml compose.extra-model-paths.yaml
-```
-
-Append `compose.extra-model-paths.yaml` to `COMPOSE_FILE`. The paths in the YAML
-configuration are container paths and must correspond to bind mounts in the
-Compose override.
-
-## Configuration layers
-
-- `compose.yaml`: portable common service, persistence, and safe CPU fallbacks.
-- `compose.nvidia.yaml`: NVIDIA image defaults and one selected GPU.
-- `compose.cpu.yaml`: explicit CPU image defaults and execution.
-- `compose.external-network.yaml`: optional pre-existing network.
-- `compose.extra-model-paths.yaml`: optional local file copied from the example.
-- `.env`: local values and selected layers.
-
-Run `docker compose config` whenever these layers change.
-
-## Updating
-
-```bash
-bash scripts/update.sh
-```
-
-That command updates this deployment repository and rebuilds the configured
-ComfyUI ref. The default ref is an immutable upstream release tag. Advancing
-ComfyUI itself is deliberate: change `COMFYUI_REF`, rebuild, run the release
-tests, and retain the old image tag or Git commit for rollback.
-
-ComfyUI core is image-owned and updates through a rebuild. Manager-installed
-custom-node code lives in the custom-node bind mount; additional Python packages
-live in the `comfyui-python` named volume.
+See [Networking](docs/NETWORKING.md).
 
 ## Backup and restore
 
-The default restic example prioritizes `.env`, active Compose files, custom
-nodes, user state, workflows, and inputs. Models, outputs, and the Python volume
-are individually optional because they can be very large or reproducible.
+Restic examples are included for configuration, workflows, custom nodes, user
+state, and optionally models, outputs, and the Python environment.
 
 ```bash
 cp config/restic.env.example config/restic.env
 cp config/restic-excludes.txt.example config/restic-excludes.txt
 chmod 600 config/restic.env
 $EDITOR config/restic.env
+
 bash scripts/restic-backup.sh
 bash scripts/restic-restore.sh latest /tmp/comfierui-restore
 ```
 
-See [Backup and restore](docs/BACKUP_RESTORE.md) before enabling timers.
+Read [Backup and restore](docs/BACKUP_RESTORE.md) before enabling the included
+systemd timers.
 
 ## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md)
+Start here when the quick commands are not enough:
+
 - [Configuration reference](docs/CONFIGURATION.md)
-- [Compatibility matrix](docs/COMPATIBILITY.md)
-- [GPU and accelerator selection](docs/GPU.md)
-- [Permissions](docs/PERMISSIONS.md)
-- [Networking](docs/NETWORKING.md)
-- [Custom nodes and Manager](docs/CUSTOM_NODES.md)
-- [Existing-installation migration](docs/MIGRATION.md)
-- [Backup and restore](docs/BACKUP_RESTORE.md)
 - [Operations and updates](docs/OPERATIONS.md)
-- [Testing](docs/TESTING.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
+- [Permissions](docs/PERMISSIONS.md)
+- [Custom nodes and Manager](docs/CUSTOM_NODES.md)
+- [Migration from an existing installation](docs/MIGRATION.md)
+- [Networking](docs/NETWORKING.md)
+- [Backup and restore](docs/BACKUP_RESTORE.md)
 - [Security](docs/SECURITY.md)
+
+<details>
+<summary><strong>Nerd stuff: architecture, hardware support, and project validation</strong></summary>
+
+### How it is put together
+
+The common Compose configuration handles persistence, permissions, networking,
+health checks, and Manager state. Accelerator-specific settings live in separate
+Compose overrides.
+
+- NVIDIA CUDA 13 is currently verified on an RTX 4060 Ti.
+- NVIDIA CUDA 12.6 and CPU profiles are available but still considered
+  experimental until broader hardware testing is recorded.
+- AMD ROCm and Intel GPU profiles are not shipped yet. They need dedicated
+  images, device mappings, framework packages, and real workflow tests.
+
+Automatic setup uses a supported NVIDIA profile when detected. On an AMD- or
+Intel-GPU machine, it currently falls back to CPU rather than pretending GPU
+acceleration works.
+
+More detail:
+
+- [Architecture](docs/ARCHITECTURE.md)
+- [GPU and accelerator selection](docs/GPU.md)
+- [Compatibility matrix](docs/COMPATIBILITY.md)
+- [Testing](docs/TESTING.md)
 - [Repository file reference](docs/FILE_REFERENCE.md)
 - [Release checklist](docs/RELEASE_CHECKLIST.md)
 
-## Project history
+The existing Git history is intentionally retained because this project has
+changed substantially over time. Files removed from the current tree may still
+exist in older commits, and any credential ever committed must remain rotated.
 
-The existing Git history is intentionally retained. The earlier host-based
-installation, workflow experiments, and Docker overhaul show how the project
-evolved. Files removed from the current tree may still exist in older commits.
-Any credential that was ever committed must remain rotated and invalid.
+</details>
 
 ## License
 
-ComfierUI's repository code and documentation are available under the
-[MIT License](LICENSE). This permissive license allows broad use, modification,
-redistribution, sublicensing, and commercial use while requiring preservation of
-the copyright and license notice.
+ComfierUI is available under the [MIT License](LICENSE). Use it, change it, share
+it, or improve it. Keep the copyright and license notice with redistributed
+copies.
