@@ -55,6 +55,37 @@ when available, otherwise configures CPU mode, detects the host timezone, and
 writes a short `.env` containing the settings a normal user may actually need to
 change. `.env.example` is the comprehensive advanced reference.
 
+### Install your first model
+
+ComfierUI currently uses the familiar legacy Manager interface by default because
+it includes server-side model search and installation.
+
+1. Open **Manager** in ComfyUI.
+2. Select **Install Models**.
+3. Search for a checkpoint suitable for the workflow you want to run.
+4. Select **Install** and follow the server logs until it finishes.
+5. Refresh the model list or restart ComfyUI if the new model does not appear.
+
+```bash
+docker compose logs -f comfyui
+```
+
+The model downloads into `COMFYUI_MODELS_PATH`, which defaults to
+`./data/models`. A workflow-template **Download** button may instead download a
+file through your web browser, which is not useful when ComfyUI runs on another
+machine.
+
+The newer Manager interface remains available by setting this in `.env` and
+recreating the container:
+
+```dotenv
+COMFYUI_MANAGER_LEGACY_UI=false
+```
+
+```bash
+docker compose up -d --force-recreate
+```
+
 ## Setup TL;DR
 
 ```bash
@@ -144,8 +175,10 @@ See [Permissions](docs/PERMISSIONS.md) and
 
 ## ComfyUI Manager and custom nodes
 
-The current built-in Manager interface is enabled by default. Custom-node code
-and its Python dependencies persist across normal image rebuilds.
+The familiar legacy Manager interface is enabled by default because it currently
+provides the fuller convenience feature set, including server-side **Install
+Models**. Custom-node code and its Python dependencies persist across normal
+image rebuilds.
 
 After installing or updating nodes:
 
@@ -154,8 +187,9 @@ docker compose restart comfyui
 docker compose logs --since=5m comfyui
 ```
 
-See [Custom nodes and Manager](docs/CUSTOM_NODES.md) for policy settings,
-dependency repair, and clean venv recovery.
+See [Custom nodes, models, and Manager](docs/CUSTOM_NODES.md) for interface
+selection, model destinations, policy settings, dependency repair, and clean
+venv recovery.
 
 ## Optional shared Docker network
 
@@ -202,7 +236,7 @@ Start here when the quick commands are not enough:
 - [Operations and updates](docs/OPERATIONS.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Permissions](docs/PERMISSIONS.md)
-- [Custom nodes and Manager](docs/CUSTOM_NODES.md)
+- [Custom nodes, models, and Manager](docs/CUSTOM_NODES.md)
 - [Migration from an existing installation](docs/MIGRATION.md)
 - [Networking](docs/NETWORKING.md)
 - [Backup and restore](docs/BACKUP_RESTORE.md)
