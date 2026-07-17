@@ -38,6 +38,7 @@ items = [
     ("output", data_path / "output", True),
     ("temp", data_path / "temp", True),
     ("user", data_path / "user", True),
+    ("user/default", data_path / "user" / "default", True),
     ("models", Path(sys.argv[5]), False),
     ("workflows", Path(sys.argv[6]), True),
 ]
@@ -55,6 +56,7 @@ def permissions_for(path: Path) -> int:
     if st.st_gid in groups:
         return (mode >> 3) & 0b111
     return mode & 0b111
+
 
 for label, path, write_required in items:
     print(f"--- {label}: {path} ---")
