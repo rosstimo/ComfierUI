@@ -23,8 +23,12 @@ services:
       NVIDIA_VISIBLE_DEVICES: ${COMFYUI_GPU_DEVICE:?Set COMFYUI_GPU_DEVICE in .env}
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
 
+    # Allows a shared host model library to retain its existing group ownership.
+    group_add:
+      - "${COMFYUI_MODELS_GID:-${PGID:-1000}}"
+
     volumes:
-      - ./data/models:/opt/ComfyUI/models
+      - ${COMFYUI_MODELS_PATH:-./data/models}:/opt/ComfyUI/models
       - ./data/custom_nodes:/opt/ComfyUI/custom_nodes
       - ./data/user:/opt/ComfyUI/user
       - ./data/input:/opt/ComfyUI/input
