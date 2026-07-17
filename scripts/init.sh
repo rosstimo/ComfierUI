@@ -63,7 +63,7 @@ configure_cpu() {
     env_set COMFYUI_NVIDIA_PROFILE none
     env_set COMFYUI_BASE_IMAGE "${cpu_base}"
     env_set TORCH_INDEX_URL "${cpu_index}"
-    echo "Configured CPU mode."
+    echo "Configured CPU mode (experimental; representative workflow validation pending)."
 }
 
 configure_nvidia() {
@@ -88,15 +88,20 @@ configure_nvidia() {
     env_set TORCH_INDEX_URL "${torch_index}"
     echo "Selected NVIDIA GPU: ${gpu_name} (${gpu_uuid})"
     echo "NVIDIA profile: ${profile}; driver ${gpu_driver}; compute capability ${gpu_compute}"
+    if [[ "${profile}" == cuda12 ]]; then
+        echo "Support tier: experimental; representative CUDA 12 hardware validation pending."
+    else
+        echo "Support tier: verified for the documented CUDA 13 test configuration."
+    fi
 }
 
 if [[ "${mode}" == cpu ]]; then
     configure_cpu
 elif [[ -z "${gpu_record}" ]]; then
     if [[ "${mode}" == auto ]]; then
-        echo "No usable NVIDIA GPU detected."
+        echo "No configured NVIDIA GPU profile detected."
         configure_cpu
-        echo "AMD and Intel GPU containers are not currently implemented."
+        echo "AMD and Intel GPU acceleration is planned but not implemented; using CPU mode."
     else
         echo "ERROR: ${mode} requested, but nvidia-smi did not return a GPU." >&2
         exit 1
@@ -125,9 +130,9 @@ else
         configure_nvidia cuda12
         echo "CUDA 12 compatibility mode selected because CUDA 13 requirements were not met."
     else
-        echo "NVIDIA GPU found, but driver ${gpu_driver} is older than the supported profiles."
+        echo "NVIDIA GPU found, but driver ${gpu_driver} is older than the configured NVIDIA profiles."
         configure_cpu
-        echo "Upgrade the NVIDIA driver or define another tested accelerator profile manually."
+        echo "Upgrade the NVIDIA driver or add and validate a separate accelerator profile."
     fi
 fi
 
