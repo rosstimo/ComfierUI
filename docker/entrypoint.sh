@@ -15,6 +15,7 @@ mkdir -p \
     /data/cache/pip \
     /data/cache/torch \
     /data/home \
+    /tmp/ckpts \
     "${comfy_root}/custom_nodes" \
     "${comfy_root}/input" \
     "${comfy_root}/models" \
