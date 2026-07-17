@@ -1,83 +1,186 @@
 # ComfierUI
 
-This exists because i forget how to setup the ComfyUI server every time.
+A reproducible NVIDIA Docker Compose deployment for ComfyUI with persistent models, custom nodes, user state, workflows, inputs, outputs, caches, and custom-node Python dependencies.
 
-both ComfyUI and ComfyUI-Manager are included here as submodules. To clone the repository with the submodules, use the following command:
+This branch replaces the old host virtual environment, ComfyUI submodule, separate ComfyUI-Manager submodule, launch script, and systemd service workflow.
 
-```bash
-git clone --recurse-submodules
-```
+## What this deployment does
 
-If you have already cloned the repository and forgot to include the submodules, you can use the following command to clone the submodules:
+- Builds ComfyUI directly from the official upstream repository.
+- Installs CUDA-enabled PyTorch inside the image.
+- Installs the Manager dependencies supplied by ComfyUI.
+- Starts ComfyUI with `--enable-manager`.
+- Pins the container to a selected NVIDIA GPU UUID.
+- Runs ComfyUI as the invoking host user's UID and GID.
+- Keeps runtime data outside the image under `data/`.
+- Keeps repository workflows under version control in `workflows/`.
+- Uses host port `8189` by default so it can be tested beside a legacy service on `8188`.
 
-```bash
-git submodule update --init --recursive
-```
+## Requirements
 
-ComfyUI-Manager is normally cloned into ComfyUI/custom_nodes/ in this case add a symlink to the ComfyUI-Manager folder in the ComfyUI/custom_nodes/ folder.
+- Linux
+- Docker Engine
+- Docker Compose plugin
+- NVIDIA driver
+- NVIDIA Container Toolkit
+- Git
 
-```bash
-ln -s ComfyUI-Manager ComfyUI/custom_nodes/ComfyUI-Manager
-```
-note: if this instance is intended for multiple users or you want to run it as a service the recomended location to clone the repository is `/opt/ComfierUI/` 
-
-## Usage
-
-run the setup_python_venv.sh script to setup a python virtual environment and install the required packages.
-
-```bash
-./setup_python_venv.sh
-```
-
-to start the ComfyUI server run the run_ComfyUI_server.sh script. (edit the script as needed)
+Confirm GPU access before continuing:
 
 ```bash
-./run_ComfyUI_server.sh
+docker run --rm --gpus all \
+    nvidia/cuda:13.0.0-base-ubuntu24.04 \
+    nvidia-smi
 ```
 
-note: I've included the script `setup.sh` as a work in progress. I plan to use it to setup symlinks ans execute other setup scripts
+## Initial deployment
 
-## Optionally run ComfyUI as a service
-
-I've included a systemd service file to run ComfyUI as a service. To use it, copy the file to the systemd services folder and enable the service.
-
-
-
-first create a dedicated user and group for the service. the user should not have a password or login shell and should not be able to log in interactively.
-
-add the group:
-```bash
-sudo groupadd ComfyUI
-```
-
-on arch based systems:
-```bash
-sudo useradd -r -s /usr/bin/nologin -g ComfyUI ComfyUI
-```
-
-on debian based systems:
-```bash
-sudo adduser --system --no-create-home --group ComfyUI
-```
-
-change the ownership of the directories, files, scripts needed by the ComfyUI user:
+Clone this branch into a new directory rather than replacing a working legacy installation in place:
 
 ```bash
-sudo chown -R ComfyUI:ComfyUI ComfierUI
+cd /mnt/nvme2
+
+git clone \
+    --branch docker-compose \
+    https://github.com/rosstimo/ComfierUI.git \
+    ComfierUI-docker
+
+cd ComfierUI-docker
+bash scripts/init.sh
 ```
 
-copy the service file to the systemd services folder:
+The initialization script:
+
+1. Creates the persistent directory structure.
+2. Copies `.env.example` to `.env` when needed.
+3. Selects the detected NVIDIA GPU with the most VRAM.
+4. Records the invoking user's UID and GID.
+5. validates the resolved Compose configuration.
+
+Review the generated configuration:
 
 ```bash
-sudo cp ComfyUI.service /etc/systemd/system/
+cat .env
+docker compose config
 ```
 
-restart the systemd daemon and enable the service:
+Build and start ComfyUI:
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable ComfyUI
-sudo systemctl start ComfyUI
-sudo systemctl status ComfyUI.service
+docker compose build --pull comfyui
+docker compose up -d
+docker compose ps
+docker compose logs -f comfyui
 ```
 
+The default test URL is:
+
+```text
+http://SERVER-IP:8189
+```
+
+## Persistent layout
+
+```text
+ComfierUI-docker/
+├── compose.yaml
+├── Dockerfile
+├── docker/
+│   └── entrypoint.sh
+├── scripts/
+├── workflows/                 # tracked by Git
+└── data/                      # ignored by Git
+    ├── cache/
+    ├── custom_nodes/
+    ├── home/
+    ├── input/
+    ├── models/
+    ├── output/
+    ├── temp/
+    └── user/
+```
+
+The named volume `comfierui_comfyui-python` preserves Python packages installed for custom nodes through ComfyUI-Manager. Image rebuilds refresh the pinned PyTorch packages and current ComfyUI requirements while retaining additional custom-node packages.
+
+## GPU selection
+
+`scripts/init.sh` selects the GPU with the most VRAM. To choose another GPU, edit `.env` and set its UUID:
+
+```dotenv
+COMFYUI_GPU_DEVICE=GPU-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+```
+
+List available UUIDs with:
+
+```bash
+nvidia-smi --query-gpu=index,uuid,name,memory.total --format=csv
+```
+
+Use the UUID rather than a numeric index so device selection remains stable if enumeration order changes.
+
+## Legacy installation reconnaissance
+
+Before migrating anything, inspect the old layout and resolve symlinks:
+
+```bash
+bash scripts/recon-legacy.sh /mnt/nvme2/ComfierUI
+```
+
+Do not blindly copy the old virtual environment, ComfyUI source tree, Manager source tree, caches, or every custom node. Bring up the clean container first, then migrate selected assets in this order:
+
+1. Models
+2. Workflows
+3. Required input images
+4. Selected output images
+5. Custom nodes needed by tested workflows
+6. User settings only when still applicable
+
+Use `rsync -aHAX --info=progress2` for large asset migrations after confirming the real source paths.
+
+## Common operations
+
+```bash
+# Status
+docker compose ps
+
+# Follow logs
+docker compose logs -f comfyui
+
+# Restart
+docker compose restart comfyui
+
+# Stop without deleting persistent data
+docker compose down
+
+# Update this branch, rebuild, and restart
+bash scripts/update.sh
+
+# Open a shell in the running container
+docker compose exec comfyui bash
+
+# Show the exact upstream ComfyUI commit in the image
+docker compose exec comfyui cat /opt/comfyui-commit
+```
+
+## Rebuilding the Python volume
+
+Normally the Python volume should be retained because it contains custom-node dependencies. To intentionally rebuild it from the image:
+
+```bash
+docker compose down
+docker volume rm comfierui_comfyui-python
+docker compose up -d --build
+```
+
+Removing that volume does not remove models, workflows, inputs, outputs, or user data stored under `data/`.
+
+## Security notes
+
+- Do not commit `.env`, API keys, access tokens, model-site credentials, or private workflows.
+- Workflow JSON can contain credentials entered into node widgets. Inspect workflows before committing them.
+- ComfyUI is bound to all host interfaces by default. Restrict `COMFYUI_BIND_ADDRESS`, firewall the port, or place it behind an authenticated reverse proxy before exposing it beyond a trusted network.
+- Custom nodes execute code inside the container and can modify mounted data. Install only nodes you trust.
+
+## Legacy files
+
+The old submodules, systemd unit, and host setup scripts remain in the branch temporarily for migration review. They are not used by `compose.yaml` and can be removed after the Docker deployment and selected workflow migrations are verified.
