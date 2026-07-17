@@ -6,5 +6,5 @@ cd "${repo_root}"
 
 git pull --ff-only
 docker compose build --pull comfyui
-docker compose up -d --remove-orphans
+docker compose up -d --force-recreate comfyui
 docker compose ps

@@ -1,0 +1,9 @@
+# Runtime caches and scratch files
+**/cache/**
+**/temp/**
+**/__pycache__/**
+**/*.pyc
+
+# Repository metadata is already preserved by Git
+**/.git/**
+

@@ -1,21 +1,11 @@
 .git
-.github
+.gitignore
 .env
-*.log
-*~
-
-ComfyUI
-ComfyUI-Manager
-custom_nodes
-models
-input
-output
-extramodels
-ipadapter
-clip_vision
-
-# Runtime persistence is mounted, not copied into the image.
+config/restic.env
 data
-
-# Workflows are mounted at runtime and do not belong in the image layer.
-workflows
+__pycache__
+*.pyc
+*.log
+README.md
+docs
+systemd

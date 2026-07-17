@@ -1,0 +1,8 @@
+services:
+  comfyui:
+    build:
+      args:
+        BASE_IMAGE: "${COMFYUI_BASE_IMAGE:-ubuntu:24.04}"
+        TORCH_INDEX_URL: "${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}"
+    environment:
+      COMFYUI_ACCELERATOR: cpu

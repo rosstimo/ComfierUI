@@ -1,11 +1,11 @@
 # syntax=docker/dockerfile:1.7
 
-ARG CUDA_IMAGE=nvidia/cuda:13.0.0-base-ubuntu24.04
-FROM ${CUDA_IMAGE}
+ARG BASE_IMAGE=nvidia/cuda:13.0.0-base-ubuntu24.04
+FROM ${BASE_IMAGE}
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG COMFYUI_REPO=https://github.com/Comfy-Org/ComfyUI.git
-ARG COMFYUI_REF=master
+ARG COMFYUI_REF=v0.28.0
 ARG PYTORCH_VERSION=2.11.0
 ARG TORCHVISION_VERSION=0.26.0
 ARG TORCHAUDIO_VERSION=2.11.0
@@ -30,14 +30,16 @@ RUN apt-get update \
         libgles2 \
         libglib2.0-0 \
         libgomp1 \
+        passwd \
         pkg-config \
         python3 \
         python3-pip \
         python3-venv \
+    && git lfs install --system \
     && rm -rf /var/lib/apt/lists/*
 
-# Ubuntu CUDA base images may already contain UID/GID 1000. Reuse numeric
-# identities when present and create only the missing passwd/group entries.
+# Ubuntu images often already contain UID/GID 1000. Reuse numeric identities
+# when present and create only missing passwd/group entries.
 RUN if ! getent group "${PGID}" >/dev/null; then \
         groupadd --gid "${PGID}" comfy; \
     fi \
@@ -108,4 +110,4 @@ ENV HOME=/data/home \
 EXPOSE 8188
 
 ENTRYPOINT ["/usr/local/bin/comfierui-entrypoint"]
-CMD ["--listen", "0.0.0.0", "--port", "8188", "--enable-manager", "--dont-print-server"]
+CMD ["--listen", "0.0.0.0", "--port", "8188", "--dont-print-server"]

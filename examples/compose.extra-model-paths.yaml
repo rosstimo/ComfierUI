@@ -1,0 +1,20 @@
+# Copy to compose.extra-model-paths.yaml, replace the host paths, and append the
+# file to COMPOSE_FILE. The matching YAML config uses the container paths below.
+services:
+  comfyui:
+    volumes:
+      - type: bind
+        source: /host/path/to/external-models
+        target: /mnt/external-models
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./config/extra_model_paths.yaml
+        target: /config/extra_model_paths.yaml
+        read_only: true
+        bind:
+          create_host_path: false
+    environment:
+      COMFYUI_EXTRA_ARGS: >-
+        --extra-model-paths-config /config/extra_model_paths.yaml

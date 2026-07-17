@@ -1,223 +1,189 @@
 # ComfierUI
 
-A reproducible NVIDIA Docker Compose deployment for ComfyUI with persistent models, custom nodes, user state, workflows, inputs, outputs, caches, and custom-node Python dependencies.
+A version-pinned Docker Compose deployment for self-hosted ComfyUI. ComfyUI core,
+PyTorch, and system libraries live in a built image. Models, workflows, custom
+nodes, user state, inputs, outputs, and caches remain persistent outside it.
 
-This branch replaces the old host virtual environment, ComfyUI submodule, separate ComfyUI-Manager submodule, launch script, and systemd service workflow.
+## What this repository is
 
-## What this deployment does
+- A portable Linux deployment with repository-local storage by default.
+- A tested NVIDIA path with automatic GPU and compatibility-profile discovery.
+- A CPU configuration for installation, diagnostics, and small workloads.
+- A non-root permissions model that also supports existing shared model stores.
+- Current built-in ComfyUI Manager, with the legacy interface available by choice.
+- Optional external Docker networking, extra model paths, and restic automation.
+- Documentation and validation intended to make local changes reviewable.
 
-- Builds ComfyUI directly from the official upstream repository.
-- Installs CUDA-enabled PyTorch inside the image.
-- Installs the Manager dependencies supplied by ComfyUI.
-- Starts ComfyUI with `--enable-manager`.
-- Uses the current Manager interface by default, with the legacy interface available as an option.
-- Configures Manager policy explicitly for a remotely accessed personal deployment.
-- Pins the container to a selected NVIDIA GPU UUID.
-- Runs ComfyUI as the invoking host user's UID and GID.
-- Keeps runtime data outside the image under `data/`.
-- Keeps repository workflows under version control in `workflows/`.
-- Uses host port `8189` by default so it can be tested beside a legacy service on `8188`.
+It is not a universal container for every accelerator. AMD ROCm and Intel GPU
+support need their own tested images, devices, and PyTorch packages.
 
 ## Requirements
 
 - Linux
-- Docker Engine
-- Docker Compose plugin
-- NVIDIA driver
-- NVIDIA Container Toolkit
+- Docker Engine with the Docker Compose v2 plugin
 - Git
+- Python 3 for the host-side helper scripts
+- NVIDIA driver and NVIDIA Container Toolkit for NVIDIA mode
+- Sufficient storage for the image, models, custom nodes, and generated assets
 
-Confirm GPU access before continuing:
+## Quick start
 
-```bash
-docker run --rm --gpus all \
-    nvidia/cuda:13.0.0-base-ubuntu24.04 \
-    nvidia-smi
-```
-
-## Initial deployment
-
-Clone this branch into a new directory rather than replacing a working legacy installation in place:
+Run initialization as the non-root user that should own the persistent files:
 
 ```bash
-cd /mnt/nvme2
-
-git clone \
-    --branch docker-compose \
-    https://github.com/rosstimo/ComfierUI.git \
-    ComfierUI-docker
-
-cd ComfierUI-docker
+git clone https://github.com/rosstimo/ComfierUI.git
+cd ComfierUI
 bash scripts/init.sh
-```
-
-The initialization script:
-
-1. Creates the persistent directory structure.
-2. Copies `.env.example` to `.env` when needed.
-3. Selects the detected NVIDIA GPU with the most VRAM.
-4. Records the invoking user's UID and GID.
-5. Validates the resolved Compose configuration.
-
-Review the generated configuration:
-
-```bash
-cat .env
-docker compose config
-```
-
-Build and start ComfyUI:
-
-```bash
+$EDITOR .env
+bash scripts/preflight.sh
 docker compose build --pull comfyui
 docker compose up -d
 docker compose ps
-docker compose logs -f comfyui
 ```
 
-The default test URL is:
+Open `http://127.0.0.1:8188` on the host. For another machine, use an SSH tunnel,
+an authenticated reverse proxy, or deliberately change the bind address after
+reviewing [networking](docs/NETWORKING.md) and [security](docs/SECURITY.md).
 
-```text
-http://SERVER-IP:8189
-```
+## Accelerator selection
 
-## Persistent layout
+`bash scripts/init.sh` chooses the highest-VRAM NVIDIA GPU when possible:
 
-```text
-ComfierUI-docker/
-├── compose.yaml
-├── Dockerfile
-├── docker/
-│   └── entrypoint.sh
-├── scripts/
-├── workflows/                 # tracked by Git
-└── data/                      # ignored by Git
-    ├── cache/
-    ├── custom_nodes/
-    ├── home/
-    ├── input/
-    ├── models/
-    ├── output/
-    ├── temp/
-    └── user/
-```
+- CUDA 13 for compute capability 7.5 or newer with a 580+ driver.
+- CUDA 12.6 compatibility mode for older NVIDIA architectures or a 525-579
+  driver.
+- CPU when no supported NVIDIA profile is available.
 
-The named volume `comfierui_comfyui-python` preserves Python packages installed for custom nodes through ComfyUI-Manager. Image rebuilds refresh the pinned PyTorch packages and current ComfyUI requirements while retaining additional custom-node packages.
-
-## GPU selection
-
-`scripts/init.sh` selects the GPU with the most VRAM. To choose another GPU, edit `.env` and set its UUID:
-
-```dotenv
-COMFYUI_GPU_DEVICE=GPU-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-```
-
-List available UUIDs with:
+Explicit modes are also available:
 
 ```bash
-nvidia-smi --query-gpu=index,uuid,name,memory.total --format=csv
+bash scripts/init.sh auto
+bash scripts/init.sh nvidia-cuda13
+bash scripts/init.sh nvidia-cuda12
+bash scripts/init.sh cpu
 ```
 
-Use the UUID rather than a numeric index so device selection remains stable if enumeration order changes.
+See [GPU and compatibility](docs/GPU.md) and the
+[compatibility matrix](docs/COMPATIBILITY.md).
 
-## Manager interface mode
+## New storage or existing assets
 
-The current ComfyUI Manager interface is the default:
+Fresh installs use `./data`. Existing installations can reuse their libraries
+without copying them:
 
 ```dotenv
-COMFYUI_MANAGER_LEGACY_UI=false
+COMFYUI_MODELS_PATH=/absolute/path/to/models
+COMFYUI_WORKFLOWS_PATH=/absolute/path/to/workflows
+COMFYUI_SHARED_GID=1234
 ```
 
-To temporarily use the familiar legacy Manager interface, set:
+After changing paths:
+
+```bash
+bash scripts/check-permissions.sh
+bash scripts/preflight.sh --skip-gpu-container-test
+```
+
+Compose does not create missing bind paths for you. This prevents accidental
+root-owned directories. `scripts/init.sh` creates missing paths as the invoking
+user and leaves existing external libraries unchanged.
+
+## Optional existing Docker network
+
+A normal deployment needs only its private project network. To join another
+network, such as an AI service stack:
 
 ```dotenv
-COMFYUI_MANAGER_LEGACY_UI=true
+COMPOSE_FILE=compose.yaml:compose.nvidia.yaml:compose.external-network.yaml
+COMFYUI_EXTERNAL_NETWORK=ai-services
 ```
-
-Apply a mode change without rebuilding the image:
 
 ```bash
-docker compose up -d --force-recreate comfyui
+docker network create ai-services  # only when it does not already exist
+docker compose up -d --force-recreate
 ```
 
-The startup log reports either `ComfyUI Manager UI: current` or `ComfyUI Manager UI: legacy`.
+Other containers on that network use the service DNS name `comfyui` and
+container port `8188`.
 
-## Manager security policy
+## Extra model roots
 
-ComfyUI Manager applies stricter controls when ComfyUI listens on a non-loopback address. This deployment makes the relevant settings explicit:
-
-```dotenv
-COMFYUI_MANAGER_SECURITY_LEVEL=normal
-COMFYUI_MANAGER_NETWORK_MODE=personal_cloud
-```
-
-For this personal deployment, those values permit installation and updates of registered node packs while retaining the normal security restrictions on higher-risk Manager actions. The entrypoint writes the values into `data/user/__manager/config.ini` on every container start so the runtime policy matches `.env`.
-
-Arbitrary Git URL installation and arbitrary pip installation remain disabled by Manager unless separately enabled in its config. Do not enable those features casually on a remotely reachable instance.
-
-## Legacy installation reconnaissance
-
-Before migrating anything, inspect the old layout and resolve symlinks:
+One complete model library through `COMFYUI_MODELS_PATH` is simplest. When model
+categories are spread across several roots, copy and edit both examples:
 
 ```bash
-bash scripts/recon-legacy.sh /mnt/nvme2/ComfierUI
+cp config/extra_model_paths.yaml.example config/extra_model_paths.yaml
+cp examples/compose.extra-model-paths.yaml compose.extra-model-paths.yaml
 ```
 
-Do not blindly copy the old virtual environment, ComfyUI source tree, Manager source tree, caches, or every custom node. Bring up the clean container first, then migrate selected assets in this order:
+Append `compose.extra-model-paths.yaml` to `COMPOSE_FILE`. The paths in the YAML
+configuration are container paths and must correspond to bind mounts in the
+Compose override.
 
-1. Models
-2. Workflows
-3. Required input images
-4. Selected output images
-5. Custom nodes needed by tested workflows
-6. User settings only when still applicable
+## Configuration layers
 
-Use `rsync -aHAX --info=progress2` for large asset migrations after confirming the real source paths.
+- `compose.yaml`: portable common service, persistence, and safe CPU fallbacks.
+- `compose.nvidia.yaml`: NVIDIA image defaults and one selected GPU.
+- `compose.cpu.yaml`: explicit CPU image defaults and execution.
+- `compose.external-network.yaml`: optional pre-existing network.
+- `compose.extra-model-paths.yaml`: optional local file copied from the example.
+- `.env`: local values and selected layers.
 
-## Common operations
+Run `docker compose config` whenever these layers change.
+
+## Updating
 
 ```bash
-# Status
-docker compose ps
-
-# Follow logs
-docker compose logs -f comfyui
-
-# Restart
-docker compose restart comfyui
-
-# Stop without deleting persistent data
-docker compose down
-
-# Update this branch, rebuild, and restart
 bash scripts/update.sh
-
-# Open a shell in the running container
-docker compose exec comfyui bash
-
-# Show the exact upstream ComfyUI commit in the image
-docker compose exec comfyui cat /opt/comfyui-commit
 ```
 
-## Rebuilding the Python volume
+That command updates this deployment repository and rebuilds the configured
+ComfyUI ref. The default ref is an immutable upstream release tag. Advancing
+ComfyUI itself is deliberate: change `COMFYUI_REF`, rebuild, run the release
+tests, and retain the old image tag or Git commit for rollback.
 
-Normally the Python volume should be retained because it contains custom-node dependencies. To intentionally rebuild it from the image:
+ComfyUI core is image-owned and updates through a rebuild. Manager-installed
+custom-node code lives in the custom-node bind mount; additional Python packages
+live in the `comfyui-python` named volume.
+
+## Backup and restore
+
+The default restic example prioritizes `.env`, active Compose files, custom
+nodes, user state, workflows, and inputs. Models, outputs, and the Python volume
+are individually optional because they can be very large or reproducible.
 
 ```bash
-docker compose down
-docker volume rm comfierui_comfyui-python
-docker compose up -d --build
+cp config/restic.env.example config/restic.env
+cp config/restic-excludes.txt.example config/restic-excludes.txt
+chmod 600 config/restic.env
+$EDITOR config/restic.env
+bash scripts/restic-backup.sh
+bash scripts/restic-restore.sh latest /tmp/comfierui-restore
 ```
 
-Removing that volume does not remove models, workflows, inputs, outputs, or user data stored under `data/`.
+See [Backup and restore](docs/BACKUP_RESTORE.md) before enabling timers.
 
-## Security notes
+## Documentation
 
-- Do not commit `.env`, API keys, access tokens, model-site credentials, or private workflows.
-- Workflow JSON can contain credentials entered into node widgets. Inspect workflows before committing them.
-- ComfyUI is bound to all host interfaces by default. Restrict `COMFYUI_BIND_ADDRESS`, firewall the port, or place it behind an authenticated reverse proxy before exposing it beyond a trusted network.
-- Custom nodes execute code inside the container and can modify mounted data. Install only nodes you trust.
+- [Architecture](docs/ARCHITECTURE.md)
+- [Configuration reference](docs/CONFIGURATION.md)
+- [Compatibility matrix](docs/COMPATIBILITY.md)
+- [GPU and accelerator selection](docs/GPU.md)
+- [Permissions](docs/PERMISSIONS.md)
+- [Networking](docs/NETWORKING.md)
+- [Custom nodes and Manager](docs/CUSTOM_NODES.md)
+- [Existing-installation migration](docs/MIGRATION.md)
+- [Backup and restore](docs/BACKUP_RESTORE.md)
+- [Operations and updates](docs/OPERATIONS.md)
+- [Testing](docs/TESTING.md)
+- [Troubleshooting](docs/TROUBLESHOOTING.md)
+- [Security](docs/SECURITY.md)
+- [Repository file reference](docs/FILE_REFERENCE.md)
+- [Release checklist](docs/RELEASE_CHECKLIST.md)
 
-## Legacy files
+## License
 
-The old submodules, systemd unit, and host setup scripts remain in the branch temporarily for migration review. They are not used by `compose.yaml` and can be removed after the Docker deployment and selected workflow migrations are verified.
+A license must be selected before the generalized deployment replaces `main`.
+Public visibility alone does not grant broad reuse rights. The release checklist
+keeps this as an explicit owner decision rather than silently choosing legal
+terms.

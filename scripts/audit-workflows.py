@@ -58,7 +58,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--url",
-        default="http://127.0.0.1:8189/object_info",
+        default="http://127.0.0.1:8188/object_info",
         help="ComfyUI object_info URL",
     )
     parser.add_argument(

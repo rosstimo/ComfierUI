@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Shared host-side helpers. This file is sourced by other scripts.
+
+bool_true() {
+    case "${1,,}" in
+        1|true|yes|on) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+require_command() {
+    command -v "$1" >/dev/null 2>&1 || {
+        echo "ERROR: Required command not found: $1" >&2
+        return 1
+    }
+}
+
+env_get() {
+    local key="$1"
+    local fallback="${2-}"
+    local env_file="${3:-.env}"
+    local value=""
+
+    if [[ -r "${env_file}" ]]; then
+        value="$(sed -n "s/^${key}=//p" "${env_file}" | tail -n1 | tr -d '\r')"
+    fi
+
+    if [[ ${#value} -ge 2 ]]; then
+        if [[ "${value:0:1}" == '"' && "${value: -1}" == '"' ]] || \
+           [[ "${value:0:1}" == "'" && "${value: -1}" == "'" ]]; then
+            value="${value:1:${#value}-2}"
+        fi
+    fi
+
+    printf '%s\n' "${value:-${fallback}}"
+}
+
+env_set() {
+    local key="$1"
+    local value="$2"
+    local env_file="${3:-.env}"
+
+    python3 - "${env_file}" "${key}" "${value}" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+key = sys.argv[2]
+value = sys.argv[3]
+lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+replacement = f"{key}={value}"
+updated = []
+replaced = False
+for line in lines:
+    if line.startswith(f"{key}="):
+        if not replaced:
+            updated.append(replacement)
+            replaced = True
+    else:
+        updated.append(line)
+if not replaced:
+    if updated and updated[-1] != "":
+        updated.append("")
+    updated.append(replacement)
+path.write_text("\n".join(updated) + "\n", encoding="utf-8")
+PY
+}
+
+version_ge() {
+    local actual="$1"
+    local minimum="$2"
+    [[ "$(printf '%s\n%s\n' "${minimum}" "${actual}" | sort -V | head -n1)" == "${minimum}" ]]
+}
+
+resolve_host_path() {
+    local path="$1"
+    local base="${2:-$PWD}"
+    python3 - "${path}" "${base}" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1]).expanduser()
+base = Path(sys.argv[2])
+if not path.is_absolute():
+    path = base / path
+print(path.resolve(strict=False))
+PY
+}

@@ -1,14 +1,20 @@
-*~
-*.log
+# Local configuration and secrets
 .env
+config/restic.env
+config/restic-excludes.txt
+config/extra_model_paths.yaml
+compose.local.yaml
+compose.extra-model-paths.yaml
 
+# Persistent runtime data
 data/
-custom_nodes/
-extramodels/
-ipadapter/
-clip_vision/
-ComfyUI/
-ComfyUI-Manager/
-input/*
-output/*
-models/*
+
+# Python and editor artifacts
+__pycache__/
+*.py[cod]
+.venv/
+.vscode/
+.idea/
+
+# Local logs
+*.log

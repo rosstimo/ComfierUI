@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Keep files created in shared bind mounts writable by the configured group.
-umask 0002
+comfy_root=/opt/ComfyUI
+venv_root=/opt/venv
+manager_config_file="${comfy_root}/user/__manager/config.ini"
+image_build_id_file=/opt/comfierui-build-id
+venv_build_id_file=/opt/venv/.comfierui-build-id
 
-readonly comfy_root=/opt/ComfyUI
-readonly venv_root=/opt/venv
-readonly image_build_id_file=/opt/comfierui-build-id
-readonly venv_build_id_file=/opt/venv/.comfierui-build-id
-readonly manager_config_file="${comfy_root}/user/__manager/config.ini"
+umask "${COMFYUI_UMASK:-0002}"
 
 mkdir -p \
     /data/cache/huggingface \
@@ -100,31 +99,62 @@ if [[ "${image_build_id}" != "${venv_build_id}" ]]; then
     printf '%s\n' "${image_build_id}" > "${venv_build_id_file}"
 fi
 
-legacy_manager_ui="${COMFYUI_MANAGER_LEGACY_UI:-false}"
-case "${legacy_manager_ui,,}" in
+manager_enabled="${COMFYUI_MANAGER_ENABLED:-true}"
+case "${manager_enabled,,}" in
     1|true|yes|on)
-        legacy_arg_present=false
-        for arg in "$@"; do
-            if [[ "${arg}" == "--enable-manager-legacy-ui" ]]; then
-                legacy_arg_present=true
-                break
-            fi
-        done
-        if [[ "${legacy_arg_present}" == false ]]; then
-            set -- "$@" --enable-manager-legacy-ui
-        fi
-        echo "ComfyUI Manager UI: legacy"
+        set -- "$@" --enable-manager
+        legacy_manager_ui="${COMFYUI_MANAGER_LEGACY_UI:-false}"
+        case "${legacy_manager_ui,,}" in
+            1|true|yes|on)
+                set -- "$@" --enable-manager-legacy-ui
+                echo "ComfyUI Manager UI: legacy"
+                ;;
+            0|false|no|off|"")
+                echo "ComfyUI Manager UI: current"
+                ;;
+            *)
+                echo "ERROR: COMFYUI_MANAGER_LEGACY_UI must be true or false." >&2
+                exit 1
+                ;;
+        esac
         ;;
     0|false|no|off|"")
-        echo "ComfyUI Manager UI: current"
+        echo "ComfyUI Manager: disabled"
         ;;
     *)
-        echo "ERROR: COMFYUI_MANAGER_LEGACY_UI must be true or false, got: ${legacy_manager_ui}" >&2
+        echo "ERROR: COMFYUI_MANAGER_ENABLED must be true or false." >&2
         exit 1
         ;;
 esac
 
-echo "ComfyUI commit: $(< /opt/comfyui-commit)"
-echo "Visible NVIDIA device(s): ${NVIDIA_VISIBLE_DEVICES:-not constrained}"
+accelerator="${COMFYUI_ACCELERATOR:-nvidia}"
+case "${accelerator,,}" in
+    nvidia)
+        echo "ComfyUI accelerator: NVIDIA"
+        ;;
+    cpu)
+        set -- "$@" --cpu
+        echo "ComfyUI accelerator: CPU"
+        ;;
+    *)
+        echo "ERROR: Unsupported COMFYUI_ACCELERATOR: ${accelerator}" >&2
+        exit 1
+        ;;
+esac
 
+if [[ -n "${COMFYUI_EXTRA_ARGS:-}" ]]; then
+    mapfile -d '' -t extra_args < <(
+        "${venv_root}/bin/python" - <<'PY'
+import os
+import shlex
+import sys
+
+for argument in shlex.split(os.environ.get("COMFYUI_EXTRA_ARGS", "")):
+    sys.stdout.buffer.write(argument.encode() + b"\0")
+PY
+    )
+    set -- "$@" "${extra_args[@]}"
+fi
+
+echo "ComfyUI commit: $(< /opt/comfyui-commit)"
 exec "${venv_root}/bin/python" "${comfy_root}/main.py" "$@"

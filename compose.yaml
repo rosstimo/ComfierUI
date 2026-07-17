@@ -1,56 +1,92 @@
-name: comfierui
-
 services:
   comfyui:
-    image: local/comfierui:${COMFYUI_IMAGE_TAG:-latest}
+    image: "${COMFYUI_IMAGE_REPOSITORY:-local/comfierui}:${COMFYUI_IMAGE_TAG:-latest}"
     build:
       context: .
+      dockerfile: Dockerfile
       args:
-        COMFYUI_REF: ${COMFYUI_REF:-master}
-        PUID: ${PUID:-1000}
-        PGID: ${PGID:-1000}
-    container_name: comfierui
+        BASE_IMAGE: "${COMFYUI_BASE_IMAGE:-ubuntu:24.04}"
+        COMFYUI_REPO: "${COMFYUI_REPO:-https://github.com/Comfy-Org/ComfyUI.git}"
+        COMFYUI_REF: "${COMFYUI_REF:-v0.28.0}"
+        PYTORCH_VERSION: "${PYTORCH_VERSION:-2.11.0}"
+        TORCHVISION_VERSION: "${TORCHVISION_VERSION:-0.26.0}"
+        TORCHAUDIO_VERSION: "${TORCHAUDIO_VERSION:-2.11.0}"
+        TORCH_INDEX_URL: "${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}"
+        PUID: "${PUID:-1000}"
+        PGID: "${PGID:-1000}"
+
     init: true
-    restart: unless-stopped
-    stop_grace_period: 30s
-    shm_size: ${COMFYUI_SHM_SIZE:-8gb}
+    restart: "${COMFYUI_RESTART_POLICY:-unless-stopped}"
+    stop_grace_period: "${COMFYUI_STOP_GRACE_PERIOD:-30s}"
+    shm_size: "${COMFYUI_SHM_SIZE:-8gb}"
 
     ports:
-      - "${COMFYUI_BIND_ADDRESS:-0.0.0.0}:${COMFYUI_PORT:-8189}:8188"
+      - "${COMFYUI_BIND_ADDRESS:-127.0.0.1}:${COMFYUI_PORT:-8188}:8188"
 
     environment:
-      TZ: ${TZ:-America/Boise}
-      NVIDIA_VISIBLE_DEVICES: ${COMFYUI_GPU_DEVICE:?Set COMFYUI_GPU_DEVICE in .env}
-      NVIDIA_DRIVER_CAPABILITIES: compute,utility
-      COMFYUI_MANAGER_LEGACY_UI: ${COMFYUI_MANAGER_LEGACY_UI:-false}
-      COMFYUI_MANAGER_SECURITY_LEVEL: ${COMFYUI_MANAGER_SECURITY_LEVEL:-normal}
-      COMFYUI_MANAGER_NETWORK_MODE: ${COMFYUI_MANAGER_NETWORK_MODE:-personal_cloud}
+      TZ: "${TZ:-Etc/UTC}"
+      COMFYUI_ACCELERATOR: "${COMFYUI_ACCELERATOR:-cpu}"
+      COMFYUI_MANAGER_ENABLED: "${COMFYUI_MANAGER_ENABLED:-true}"
+      COMFYUI_MANAGER_LEGACY_UI: "${COMFYUI_MANAGER_LEGACY_UI:-false}"
+      COMFYUI_MANAGER_SECURITY_LEVEL: "${COMFYUI_MANAGER_SECURITY_LEVEL:-normal}"
+      COMFYUI_MANAGER_NETWORK_MODE: "${COMFYUI_MANAGER_NETWORK_MODE:-personal_cloud}"
+      COMFYUI_EXTRA_ARGS: "${COMFYUI_EXTRA_ARGS:-}"
+      COMFYUI_UMASK: "${COMFYUI_UMASK:-0002}"
 
-    # Allows a shared host model library to retain its existing group ownership.
+    # Defaults to the container's primary GID. Override this when a shared model
+    # library is owned by another group on the host.
     group_add:
-      - "${COMFYUI_MODELS_GID:-1000}"
+      - "${COMFYUI_SHARED_GID:-1000}"
 
     volumes:
-      - ${COMFYUI_MODELS_PATH:-./data/models}:/opt/ComfyUI/models
-      - ./data/custom_nodes:/opt/ComfyUI/custom_nodes
-      - ./data/user:/opt/ComfyUI/user
-      - ./data/input:/opt/ComfyUI/input
-      - ./data/output:/opt/ComfyUI/output
-      - ./data/temp:/opt/ComfyUI/temp
-      - ./data/cache:/data/cache
-      - ./data/home:/data/home
-      - ./workflows:/opt/ComfyUI/user/default/workflows
-      - comfyui-python:/opt/venv
-
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids:
-                - ${COMFYUI_GPU_DEVICE:?Set COMFYUI_GPU_DEVICE in .env}
-              capabilities:
-                - gpu
+      - type: bind
+        source: "${COMFYUI_MODELS_PATH:-./data/models}"
+        target: /opt/ComfyUI/models
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${COMFYUI_DATA_PATH:-./data}/custom_nodes"
+        target: /opt/ComfyUI/custom_nodes
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${COMFYUI_DATA_PATH:-./data}/user"
+        target: /opt/ComfyUI/user
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${COMFYUI_DATA_PATH:-./data}/input"
+        target: /opt/ComfyUI/input
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${COMFYUI_DATA_PATH:-./data}/output"
+        target: /opt/ComfyUI/output
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${COMFYUI_DATA_PATH:-./data}/temp"
+        target: /opt/ComfyUI/temp
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${COMFYUI_DATA_PATH:-./data}/cache"
+        target: /data/cache
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${COMFYUI_DATA_PATH:-./data}/home"
+        target: /data/home
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${COMFYUI_WORKFLOWS_PATH:-./data/workflows}"
+        target: /opt/ComfyUI/user/default/workflows
+        bind:
+          create_host_path: false
+      - type: volume
+        source: comfyui-python
+        target: /opt/venv
 
     healthcheck:
       test:
@@ -60,10 +96,10 @@ services:
         - --silent
         - --show-error
         - http://127.0.0.1:8188/system_stats
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 90s
+      interval: "${COMFYUI_HEALTH_INTERVAL:-30s}"
+      timeout: "${COMFYUI_HEALTH_TIMEOUT:-10s}"
+      retries: "${COMFYUI_HEALTH_RETRIES:-5}"
+      start_period: "${COMFYUI_HEALTH_START_PERIOD:-90s}"
 
 volumes:
   comfyui-python:
