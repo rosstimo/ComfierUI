@@ -1,4 +1,23 @@
 services:
+  backup-init:
+    image: alpine:3.22
+    restart: "no"
+    user: "0:0"
+    environment:
+      PUID: "${PUID:-1000}"
+      PGID: "${PGID:-1000}"
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        mkdir -p /backups &&
+        chown "$${PUID}:$${PGID}" /backups &&
+        chmod 2770 /backups
+    volumes:
+      - type: bind
+        source: "${COMFYUI_BACKUP_PATH:-./backups}"
+        target: /backups
+
   backup:
     image: "restic/restic:${COMFYUI_BACKUP_RESTIC_VERSION:-0.19.1}"
     init: true
@@ -6,6 +25,9 @@ services:
     user: "${PUID:-1000}:${PGID:-1000}"
     group_add:
       - "${COMFYUI_SHARED_GID:-1000}"
+    depends_on:
+      backup-init:
+        condition: service_completed_successfully
     entrypoint:
       - /bin/sh
       - /usr/local/bin/comfierui-backup-service
@@ -62,8 +84,6 @@ services:
       - type: bind
         source: "${COMFYUI_BACKUP_PATH:-./backups}"
         target: /backups
-        bind:
-          create_host_path: false
       - type: bind
         source: ./docker/backup-service.sh
         target: /usr/local/bin/comfierui-backup-service
