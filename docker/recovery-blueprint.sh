@@ -52,7 +52,7 @@ inventory_files() {
         relative="${file#${root}/}"
         size="$(stat -c '%s' "${file}" 2>/dev/null || printf 'unknown')"
         printf '%s\t%s\n' "${size}" "${relative}"
-    done
+    done > "${destination}"
 }
 
 repo_commit="$(resolve_git_commit /source/repo || true)"
