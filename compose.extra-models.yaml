@@ -1,0 +1,22 @@
+services:
+  comfyui:
+    volumes:
+      # Keep the normal writable ComfyUI model tree from compose.yaml, then
+      # expose an existing model library beneath it as a read-only nested mount.
+      # ComfyUI discovers the nested library through extra_model_paths.yaml.
+      - type: bind
+        source: "${COMFYUI_EXTRA_MODELS_PATH}"
+        target: /opt/ComfyUI/models/external
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./config/extra_model_paths.yaml
+        target: /config/extra_model_paths.yaml
+        read_only: true
+        bind:
+          create_host_path: false
+    environment:
+      COMFYUI_EXTRA_ARGS: >-
+        ${COMFYUI_EXTRA_ARGS:-}
+        --extra-model-paths-config /config/extra_model_paths.yaml
