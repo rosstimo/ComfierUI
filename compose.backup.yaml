@@ -8,14 +8,14 @@ services:
       - "${COMFYUI_SHARED_GID:-1000}"
     entrypoint:
       - /bin/sh
-      - /usr/local/bin/comfierui-backup
-      - daemon
+      - /usr/local/bin/comfierui-backup-service
     environment:
       TZ: "${TZ:-Etc/UTC}"
       RESTIC_REPOSITORY: /backups/restic
       RESTIC_PASSWORD_FILE: /backups/restic-password
       RESTIC_CACHE_DIR: /backups/cache
       HOME: /backups/home
+      COMFYUI_BACKUP_ENABLED: "${COMFYUI_BACKUP_ENABLED:-false}"
       COMFYUI_BACKUP_TAG: "${COMFYUI_BACKUP_TAG:-comfierui}"
       COMFYUI_BACKUP_INTERVAL_HOURS: "${COMFYUI_BACKUP_INTERVAL_HOURS:-24}"
       COMFYUI_BACKUP_START_DELAY_MINUTES: "${COMFYUI_BACKUP_START_DELAY_MINUTES:-10}"
@@ -62,6 +62,12 @@ services:
       - type: bind
         source: "${COMFYUI_BACKUP_PATH:-./backups}"
         target: /backups
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./docker/backup-service.sh
+        target: /usr/local/bin/comfierui-backup-service
+        read_only: true
         bind:
           create_host_path: false
       - type: bind
