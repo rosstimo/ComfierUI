@@ -185,6 +185,7 @@ apply_retention() {
     log "Applying retention: last=${keep_last}, daily=${keep_daily}, weekly=${keep_weekly}, monthly=${keep_monthly}, yearly=${keep_yearly}"
     restic forget \
         --tag "${backup_tag}" \
+        --group-by host,tags \
         --keep-last "${keep_last}" \
         --keep-daily "${keep_daily}" \
         --keep-weekly "${keep_weekly}" \
@@ -212,7 +213,8 @@ run_backup() {
     set -- backup \
         --files-from-verbatim "${source_list}" \
         --tag "${backup_tag}" \
-        --host comfierui
+        --host comfierui \
+        --group-by host,tags
 
     if [ -r "${exclude_file}" ]; then
         set -- "$@" --exclude-file "${exclude_file}"
