@@ -122,6 +122,14 @@ workflows_setting="$(config_get COMFYUI_WORKFLOWS_PATH ./data/workflows)"
 manager_legacy_ui="$(config_get COMFYUI_MANAGER_LEGACY_UI true)"
 current_compose_file="$(config_get COMPOSE_FILE compose.yaml)"
 
+shared_gid_setting="${COMFYUI_SHARED_GID:-}"
+if [[ -z "${shared_gid_setting}" && -f .env ]]; then
+    shared_gid_setting="$(env_get COMFYUI_SHARED_GID "" .env)"
+fi
+if [[ -z "${shared_gid_setting}" ]]; then
+    shared_gid_setting="$(id -g)"
+fi
+
 extra_models_setting="${COMFYUI_EXTRA_MODELS_PATH:-}"
 if [[ -z "${extra_models_setting}" && -f .env ]]; then
     extra_models_setting="$(env_get COMFYUI_EXTRA_MODELS_PATH "" .env)"
@@ -275,7 +283,7 @@ TORCH_INDEX_URL=${selected_torch_index}
 # Host identity and shared-file permissions
 PUID=$(id -u)
 PGID=$(id -g)
-COMFYUI_SHARED_GID=$(id -g)
+COMFYUI_SHARED_GID=${shared_gid_setting}
 
 # Optional existing model library
 # Add COMFYUI_EXTRA_MODELS_PATH above and rerun scripts/init.sh to enable it.
@@ -288,7 +296,7 @@ EOF
 else
     env_set PUID "$(id -u)"
     env_set PGID "$(id -g)"
-    env_set COMFYUI_SHARED_GID "$(id -g)"
+    env_set COMFYUI_SHARED_GID "${shared_gid_setting}"
     env_set COMPOSE_FILE "${selected_compose_file}"
     env_set COMFYUI_ACCELERATOR "${selected_accelerator}"
     env_set COMFYUI_NVIDIA_PROFILE "${selected_profile}"
