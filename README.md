@@ -259,21 +259,35 @@ important small recovery state: deployment configuration, custom nodes, user and
 Manager state, and workflows. Inputs, outputs, models, the extra/legacy model
 library, and the Python volume are excluded unless explicitly enabled.
 
+Every snapshot also records a recovery blueprint describing reproducible or
+excluded state such as version pins, custom-node commits, Python package versions,
+and model inventories. The idea is to back up what is unique, rebuild what is
+reproducible, and keep a roadmap back to the known state.
+
+Users can make the backup as large as they want. Models, extra models, Python,
+inputs, and outputs can all be enabled, while optional include/exclude policy
+files allow selective protection of rare or irreplaceable assets. This is useful
+for models that may become private, gated, deleted, renamed, or otherwise hard to
+obtain again.
+
 The default schedule is one backup every 24 hours, keeping 7 daily, 4 weekly, 12
 monthly, and 3 yearly recovery points, plus the latest 3 snapshots. The local
-backup repository, generated password, and staged restores live under
-`./backups/`, which is ignored by Git.
+backup repository, generated password, and optional staged snapshot copies live
+under `./backups/`, which is ignored by Git.
 
 Workflow files can contain API keys or tokens stored in node settings, and ComfyUI
 images can embed workflow metadata. Keep workflows and image directories out of
 Git and treat backup repositories and restored data as sensitive.
 
-The built-in restore flow always restores into a staging directory rather than
-overwriting the live deployment.
+`bash scripts/backup.sh restore SNAPSHOT` performs a functional rollback of the
+live deployment. `bash scripts/backup.sh stage SNAPSHOT` is the optional
+non-destructive command for extracting a snapshot only when you want to inspect
+or manually recover individual files.
 
-Read [Backup and restore](docs/BACKUP_RESTORE.md) for include/exclude toggles,
-schedule and retention settings, manual backups, staged restores, and advanced
-external/offsite backup options.
+Read [Backup and restore](docs/BACKUP_RESTORE.md) for include/exclude policy,
+schedule and retention settings, manual backups, rollback behavior, and advanced
+external/offsite backup options. See [Recovery blueprint](docs/RECOVERY_BLUEPRINT.md)
+for the fresh-clone and known-state reconstruction model.
 
 ## Documentation
 
@@ -287,6 +301,7 @@ Start here when the quick commands are not enough:
 - [Migration from an existing installation](docs/MIGRATION.md)
 - [Networking](docs/NETWORKING.md)
 - [Backup and restore](docs/BACKUP_RESTORE.md)
+- [Recovery blueprint](docs/RECOVERY_BLUEPRINT.md)
 - [Security](docs/SECURITY.md)
 
 <details>
