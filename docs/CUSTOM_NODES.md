@@ -52,6 +52,35 @@ Manager's catalog is useful but not exhaustive. Models downloaded manually must
 be placed in the correct category below `COMFYUI_MODELS_PATH`, such as
 `checkpoints`, `loras`, `vae`, or `controlnet`.
 
+## Reusing an existing model library
+
+Do not replace `COMFYUI_MODELS_PATH` with a legacy library just to make old models
+visible. That also redirects future Manager downloads into the old tree.
+
+Keep the normal writable model directory and add the old library separately:
+
+```dotenv
+COMFYUI_MODELS_PATH=./data/models
+COMFYUI_EXTRA_MODELS_PATH=/absolute/path/to/old/models
+```
+
+Then rerun initialization:
+
+```bash
+bash scripts/init.sh
+bash scripts/preflight.sh
+docker compose up -d --force-recreate
+```
+
+The extra library is mounted read-only at `/opt/ComfyUI/models/external` and
+registered through `config/extra_model_paths.yaml`. Standard configured model
+categories from the old tree remain selectable, while Manager downloads continue
+to land under the writable `COMFYUI_MODELS_PATH` tree.
+
+Custom-node-specific model directories are intentionally not guessed. Configure
+those only after installing the node pack that owns them and checking its
+expected model paths.
+
 ## Persistence model
 
 Manager changes three persistent areas:
@@ -60,8 +89,9 @@ Manager changes three persistent areas:
 - node-pack repositories under `COMFYUI_DATA_PATH/custom_nodes`,
 - Python packages under the `comfyui-python` named volume.
 
-All three survive a normal image rebuild. ComfyUI core itself is image-owned and
-is updated by rebuilding, not by Manager.
+An optional `COMFYUI_EXTRA_MODELS_PATH` library is separate and read-only by
+default. All writable Manager-managed areas survive a normal image rebuild.
+ComfyUI core itself is image-owned and is updated by rebuilding, not by Manager.
 
 ## Installing nodes
 
