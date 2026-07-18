@@ -82,6 +82,12 @@ services:
         bind:
           create_host_path: false
       - type: bind
+        source: "${COMFYUI_EXTRA_MODELS_PATH:-${COMFYUI_MODELS_PATH:-./data/models}}"
+        target: /source/extra-models
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
         source: "${COMFYUI_BACKUP_PATH:-./backups}"
         target: /backups
       - type: bind
@@ -93,6 +99,12 @@ services:
       - type: bind
         source: ./docker/backup-entrypoint.sh
         target: /usr/local/bin/comfierui-backup
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./docker/recovery-blueprint.sh
+        target: /usr/local/bin/comfierui-recovery-blueprint
         read_only: true
         bind:
           create_host_path: false
