@@ -92,6 +92,22 @@ print(":".join(dict.fromkeys(layers)))
 PY
 }
 
+compose_with_optional_layer() {
+    local current="$1"
+    local optional_layer="$2"
+    local enabled="$3"
+
+    python3 - "${current}" "${optional_layer}" "${enabled}" <<'PY'
+import sys
+
+current, optional_layer, enabled = sys.argv[1:4]
+layers = [item for item in current.split(":") if item and item != optional_layer]
+if enabled == "true":
+    layers.append(optional_layer)
+print(":".join(dict.fromkeys(layers)))
+PY
+}
+
 project_name="$(config_get COMPOSE_PROJECT_NAME comfierui)"
 bind_address="$(config_get COMFYUI_BIND_ADDRESS 127.0.0.1)"
 port="$(config_get COMFYUI_PORT 8188)"
@@ -105,6 +121,11 @@ models_setting="$(config_get COMFYUI_MODELS_PATH ./data/models)"
 workflows_setting="$(config_get COMFYUI_WORKFLOWS_PATH ./data/workflows)"
 manager_legacy_ui="$(config_get COMFYUI_MANAGER_LEGACY_UI true)"
 current_compose_file="$(config_get COMPOSE_FILE compose.yaml)"
+
+extra_models_setting="${COMFYUI_EXTRA_MODELS_PATH:-}"
+if [[ -z "${extra_models_setting}" && -f .env ]]; then
+    extra_models_setting="$(env_get COMFYUI_EXTRA_MODELS_PATH "" .env)"
+fi
 
 cuda13_base="$(config_get COMFYUI_CUDA13_BASE_IMAGE nvidia/cuda:13.0.0-base-ubuntu24.04)"
 cuda13_index="$(config_get COMFYUI_CUDA13_TORCH_INDEX_URL https://download.pytorch.org/whl/cu130)"
@@ -204,6 +225,12 @@ else
     fi
 fi
 
+if [[ -n "${extra_models_setting}" ]]; then
+    selected_compose_file="$(compose_with_optional_layer "${selected_compose_file}" compose.extra-models.yaml true)"
+else
+    selected_compose_file="$(compose_with_optional_layer "${selected_compose_file}" compose.extra-models.yaml false)"
+fi
+
 if [[ "${new_env}" == true ]]; then
     cat > .env <<EOF
 # ComfierUI local settings
@@ -219,6 +246,13 @@ TZ=${timezone}
 COMFYUI_DATA_PATH=${data_setting}
 COMFYUI_MODELS_PATH=${models_setting}
 COMFYUI_WORKFLOWS_PATH=${workflows_setting}
+EOF
+
+    if [[ -n "${extra_models_setting}" ]]; then
+        printf 'COMFYUI_EXTRA_MODELS_PATH=%s\n' "${extra_models_setting}" >> .env
+    fi
+
+    cat >> .env <<EOF
 
 # Manager interface
 # true provides server-side Install Models; false selects the newer interface
@@ -242,6 +276,9 @@ TORCH_INDEX_URL=${selected_torch_index}
 PUID=$(id -u)
 PGID=$(id -g)
 COMFYUI_SHARED_GID=$(id -g)
+
+# Optional existing model library
+# Add COMFYUI_EXTRA_MODELS_PATH above and rerun scripts/init.sh to enable it.
 
 # Optional existing Docker network
 # Append :compose.external-network.yaml to COMPOSE_FILE above, then add:
@@ -272,6 +309,15 @@ data_path="$(resolve_host_path "$(env_get COMFYUI_DATA_PATH ./data)" "${repo_roo
 models_path="$(resolve_host_path "$(env_get COMFYUI_MODELS_PATH ./data/models)" "${repo_root}")"
 workflows_path="$(resolve_host_path "$(env_get COMFYUI_WORKFLOWS_PATH ./data/workflows)" "${repo_root}")"
 
+extra_models_path=""
+if [[ -n "${extra_models_setting}" ]]; then
+    extra_models_path="$(resolve_host_path "${extra_models_setting}" "${repo_root}")"
+    if [[ ! -d "${extra_models_path}" ]]; then
+        echo "ERROR: COMFYUI_EXTRA_MODELS_PATH is not an existing directory: ${extra_models_path}" >&2
+        exit 1
+    fi
+fi
+
 ensure_directory() {
     local path="$1"
     if [[ -e "${path}" && ! -d "${path}" ]]; then
@@ -289,10 +335,14 @@ ensure_directory "${data_path}"
 for directory in cache custom_nodes home input output temp user; do
     ensure_directory "${data_path}/${directory}"
 done
-# Pre-create the parent of the nested workflows bind mount. Otherwise Docker may
-# create it as root before the non-root ComfyUI process starts.
+# Pre-create parents of nested bind mounts. Otherwise Docker may create them as
+# root before the non-root ComfyUI process starts.
 ensure_directory "${data_path}/user/default"
 ensure_directory "${models_path}"
+if [[ -n "${extra_models_path}" ]]; then
+    ensure_directory "${models_path}/external"
+    echo "Configured read-only extra model library: ${extra_models_path}"
+fi
 ensure_directory "${workflows_path}"
 
 docker compose config >/dev/null

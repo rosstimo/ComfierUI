@@ -44,6 +44,44 @@ case "$(uname -m)" in
     *) echo "WARN  this architecture has not been documented or validated" ;;
 esac
 
+compose_file="$(env_get COMPOSE_FILE "" .env)"
+extra_models_setting="$(env_get COMFYUI_EXTRA_MODELS_PATH "" .env)"
+data_path="$(resolve_host_path "$(env_get COMFYUI_DATA_PATH ./data)" "${repo_root}")"
+models_path="$(resolve_host_path "$(env_get COMFYUI_MODELS_PATH ./data/models)" "${repo_root}")"
+extra_models_path=""
+
+if [[ -n "${extra_models_setting}" ]]; then
+    extra_models_path="$(resolve_host_path "${extra_models_setting}" "${repo_root}")"
+    echo
+    echo "=== Extra model library ==="
+    if [[ ":${compose_file}:" == *":compose.extra-models.yaml:"* ]]; then
+        echo "PASS  compose.extra-models.yaml enabled"
+    else
+        echo "FAIL  COMFYUI_EXTRA_MODELS_PATH is set but compose.extra-models.yaml is not enabled"
+        echo "      rerun: bash scripts/init.sh"
+        fail=1
+    fi
+    if [[ -d "${extra_models_path}" ]]; then
+        echo "PASS  extra model library exists: ${extra_models_path}"
+    else
+        echo "FAIL  extra model library is missing: ${extra_models_path}"
+        fail=1
+    fi
+    if [[ -d "${models_path}/external" ]]; then
+        echo "PASS  nested extra-model mount point exists: ${models_path}/external"
+    else
+        echo "FAIL  nested extra-model mount point is missing: ${models_path}/external"
+        echo "      rerun: bash scripts/init.sh"
+        fail=1
+    fi
+elif [[ ":${compose_file}:" == *":compose.extra-models.yaml:"* ]]; then
+    echo
+    echo "=== Extra model library ==="
+    echo "FAIL  compose.extra-models.yaml is enabled but COMFYUI_EXTRA_MODELS_PATH is empty"
+    echo "      set the path or rerun scripts/init.sh after removing the layer"
+    fail=1
+fi
+
 echo
 echo "=== Compose configuration ==="
 if docker compose config >/dev/null; then
@@ -85,8 +123,12 @@ fi
 
 echo
 echo "=== Disk space ==="
-data_path="$(resolve_host_path "$(env_get COMFYUI_DATA_PATH ./data)" "${repo_root}")"
-models_path="$(resolve_host_path "$(env_get COMFYUI_MODELS_PATH ./data/models)" "${repo_root}")"
-df -h "${repo_root}" "${data_path}" "${models_path}" 2>/dev/null | awk 'NR == 1 || !seen[$1]++'
+if [[ -n "${extra_models_path}" ]]; then
+    df -h "${repo_root}" "${data_path}" "${models_path}" "${extra_models_path}" 2>/dev/null |
+        awk 'NR == 1 || !seen[$1]++'
+else
+    df -h "${repo_root}" "${data_path}" "${models_path}" 2>/dev/null |
+        awk 'NR == 1 || !seen[$1]++'
+fi
 
 exit "${fail}"

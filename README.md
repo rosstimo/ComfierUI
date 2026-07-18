@@ -150,13 +150,46 @@ Python roommates with opinions, but the damage is easier to isolate.
 
 ## Use existing models and workflows
 
-Fresh installs store everything under `./data`.
+Fresh installs keep their writable model tree at `./data/models`. Keep that as
+the normal ComfyUI model directory so Manager downloads have a clean destination.
 
-To reuse an existing library, edit `.env`:
+To reuse an existing model library without mixing new downloads into it, add the
+old library as an extra model source:
 
 ```dotenv
-COMFYUI_MODELS_PATH=/absolute/path/to/models
+COMFYUI_MODELS_PATH=./data/models
+COMFYUI_EXTRA_MODELS_PATH=/absolute/path/to/old/models
+```
+
+Then rerun initialization. It detects the extra model setting, adds
+`compose.extra-models.yaml` to `COMPOSE_FILE`, and pre-creates the nested mount
+point before Docker starts:
+
+```bash
+bash scripts/init.sh
+bash scripts/preflight.sh
+docker compose up -d --force-recreate
+```
+
+The old library is mounted read-only inside the container and registered through
+ComfyUI's `extra_model_paths.yaml` support. Existing checkpoints, LoRAs, VAEs,
+ControlNet models, text encoders, and other configured standard model categories
+remain available, while Manager-installed models continue landing under
+`./data/models`.
+
+Custom-node-specific model directories are not guessed automatically. Add those
+only when the corresponding node pack is installed and you know the paths it
+expects.
+
+To reuse an existing workflow directory, set:
+
+```dotenv
 COMFYUI_WORKFLOWS_PATH=/absolute/path/to/workflows
+```
+
+For shared libraries that require supplementary group access, also set:
+
+```dotenv
 COMFYUI_SHARED_GID=1234
 ```
 
@@ -167,8 +200,8 @@ bash scripts/check-permissions.sh
 bash scripts/preflight.sh --skip-gpu-container-test
 ```
 
-The setup will not silently create missing bind-mount paths as root. A typo fails
-loudly instead of leaving a weird permissions souvenir.
+The setup will not silently create missing external bind-mount paths as root. A
+typo fails loudly instead of leaving a weird permissions souvenir.
 
 See [Permissions](docs/PERMISSIONS.md) and
 [Migration](docs/MIGRATION.md) for existing installations.

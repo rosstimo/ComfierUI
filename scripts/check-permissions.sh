@@ -17,10 +17,15 @@ shared_gid="$(env_get COMFYUI_SHARED_GID "${pgid}")"
 data_path="$(resolve_host_path "$(env_get COMFYUI_DATA_PATH ./data)" "${repo_root}")"
 models_path="$(resolve_host_path "$(env_get COMFYUI_MODELS_PATH ./data/models)" "${repo_root}")"
 workflows_path="$(resolve_host_path "$(env_get COMFYUI_WORKFLOWS_PATH ./data/workflows)" "${repo_root}")"
+extra_models_setting="$(env_get COMFYUI_EXTRA_MODELS_PATH "" .env)"
+extra_models_path=""
+if [[ -n "${extra_models_setting}" ]]; then
+    extra_models_path="$(resolve_host_path "${extra_models_setting}" "${repo_root}")"
+fi
 
 set +e
 python3 - "${puid}" "${pgid}" "${shared_gid}" \
-    "${data_path}" "${models_path}" "${workflows_path}" <<'PY'
+    "${data_path}" "${models_path}" "${workflows_path}" "${extra_models_path}" <<'PY'
 from __future__ import annotations
 
 import stat
@@ -42,6 +47,8 @@ items = [
     ("models", Path(sys.argv[5]), False),
     ("workflows", Path(sys.argv[6]), True),
 ]
+if sys.argv[7]:
+    items.append(("extra models (read-only)", Path(sys.argv[7]), False))
 groups = {gid, shared_gid}
 failures = 0
 
@@ -93,7 +100,7 @@ for label, path, write_required in items:
     if not readable or not traversable or (write_required and not writable):
         failures += 1
     elif label == "models" and not writable:
-        print("WARN  models are read-only; generation works, Manager model downloads do not")
+        print("WARN  built-in models are read-only; generation works, Manager model downloads do not")
 
 sys.exit(1 if failures else 0)
 PY
@@ -109,10 +116,20 @@ For new repository-local data, a typical repair is:
   sudo chmod -R u+rwX,g+rwX,o-rwx "${data_path}"
   sudo find "${data_path}" -type d -exec chmod g+s {} +
 
-For a shared model library, preserve its owner and grant the shared group access:
-  sudo chgrp -R ${shared_gid} "${models_path}"
-  sudo chmod -R g+rwX "${models_path}"
-  sudo find "${models_path}" -type d -exec chmod g+s {} +
+The built-in model tree should normally remain writable for Manager downloads:
+  ${models_path}
+EOF
+
+if [[ -n "${extra_models_path}" ]]; then
+    cat <<EOF
+
+The extra model library is intentionally mounted read-only. Preserve its owner
+and grant the container identity read/traverse access as needed:
+  ${extra_models_path}
+EOF
+fi
+
+cat <<'EOF'
 
 Review paths before running recursive permission changes.
 EOF

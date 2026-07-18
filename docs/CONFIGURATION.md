@@ -7,8 +7,11 @@ for advanced overrides. `.env` is ignored by Git.
 Run `docker compose config` after every material change.
 
 Rerunning `scripts/init.sh` refreshes detected accelerator and identity values
-without deleting optional Compose layers such as an external network. Existing
-local choices, including `TZ`, paths, bind address, and port, are preserved.
+without deleting unrelated optional Compose layers such as an external network.
+Existing local choices, including `TZ`, paths, bind address, and port, are
+preserved. When `COMFYUI_EXTRA_MODELS_PATH` is set, initialization automatically
+enables `compose.extra-models.yaml`; removing the setting and rerunning init
+removes that layer.
 
 ## Compose selection
 
@@ -26,14 +29,19 @@ COMPOSE_FILE=compose.yaml:compose.nvidia.yaml
 # CPU
 COMPOSE_FILE=compose.yaml:compose.cpu.yaml
 
+# NVIDIA plus a read-only existing model library
+COMPOSE_FILE=compose.yaml:compose.nvidia.yaml:compose.extra-models.yaml
+COMFYUI_EXTRA_MODELS_PATH=/absolute/path/to/existing/models
+
 # NVIDIA plus an existing shared network
 COMPOSE_FILE=compose.yaml:compose.nvidia.yaml:compose.external-network.yaml
 COMFYUI_EXTERNAL_NETWORK=ai-services
 ```
 
 The external network must already exist. The accelerator layer is selected by
-initialization; other optional layers are preserved when initialization is run
-again.
+initialization. Other optional layers are preserved when initialization is run
+again, except `compose.extra-models.yaml`, which is synchronized with whether
+`COMFYUI_EXTRA_MODELS_PATH` is configured.
 
 ## Accelerator and image
 
@@ -81,15 +89,53 @@ ownership repair on bind mounts or the named Python volume.
 | Variable | Mounted content |
 |---|---|
 | `COMFYUI_DATA_PATH` | Parent for custom nodes, user, input, output, temp, cache, and home |
-| `COMFYUI_MODELS_PATH` | Main model directory |
+| `COMFYUI_MODELS_PATH` | Main writable model directory; default `./data/models` |
+| `COMFYUI_EXTRA_MODELS_PATH` | Optional existing model library mounted read-only and registered as extra paths |
 | `COMFYUI_WORKFLOWS_PATH` | Workflow directory |
 
 Relative paths resolve from the repository. Absolute paths are recommended for
-external libraries. All bind sources must exist before `docker compose up`;
-initialization creates missing paths without modifying existing external ones.
+external libraries. All bind sources must exist before `docker compose up`.
+Initialization creates missing repository-local paths but does not create or
+modify the external model library itself.
 
-For multiple model roots, see `config/extra_model_paths.yaml.example` and
-`examples/compose.extra-model-paths.yaml`.
+### Existing or legacy model library
+
+Keep `COMFYUI_MODELS_PATH` as the normal writable model tree. Manager downloads
+and manually added new models go there.
+
+To expose an existing library separately, add this to `.env`:
+
+```dotenv
+COMFYUI_EXTRA_MODELS_PATH=/absolute/path/to/existing/models
+```
+
+Then rerun:
+
+```bash
+bash scripts/init.sh
+bash scripts/preflight.sh
+```
+
+Initialization adds `compose.extra-models.yaml` to `COMPOSE_FILE` and pre-creates
+`COMFYUI_MODELS_PATH/external` as the target for the nested read-only bind mount.
+Inside the container, the external library appears at:
+
+```text
+/opt/ComfyUI/models/external
+```
+
+`config/extra_model_paths.yaml` registers the standard model categories from
+that tree. The external library remains read-only, while Manager downloads keep
+using the normal writable `/opt/ComfyUI/models` tree backed by
+`COMFYUI_MODELS_PATH`.
+
+Custom-node-specific model directories are not guessed automatically. Add
+additional mappings only when the relevant node pack documents and requires
+them.
+
+For more complex layouts with several independent model roots, use
+`config/extra_model_paths.yaml.example` and
+`examples/compose.extra-model-paths.yaml` as a starting point.
 
 ## Host network access
 
@@ -126,12 +172,14 @@ to make an unexplained installation error disappear.
 | `COMFYUI_HEALTH_*` | Health-check timing |
 | `COMFYUI_EXTRA_ARGS` | Additional ComfyUI CLI arguments parsed with Python `shlex` |
 
-## Shipped examples
+## Shipped examples and configuration
 
 - `.env.example`: comprehensive environment-variable reference.
+- `compose.extra-models.yaml`: optional read-only existing-library mount.
+- `config/extra_model_paths.yaml`: standard category mapping used by that mount.
 - `config/manager-config.ini.example`: Manager keys written by the entrypoint.
-- `config/extra_model_paths.yaml.example`: ComfyUI extra-model-path mapping.
-- `examples/compose.extra-model-paths.yaml`: mounts for the matching config.
+- `config/extra_model_paths.yaml.example`: customizable multi-root model mapping.
+- `examples/compose.extra-model-paths.yaml`: mounts for the customizable example.
 - `config/restic.env.example`: backup source and retention choices.
 - `config/restic-excludes.txt.example`: backup excludes.
 - `systemd/*.example`: host backup, maintenance, and deep-check units.
