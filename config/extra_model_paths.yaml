@@ -1,0 +1,22 @@
+# Existing model library mounted by compose.extra-models.yaml.
+# The normal writable ComfyUI model tree remains /opt/ComfyUI/models.
+# This external tree is registered separately so Manager downloads still land
+# in the built-in model folders rather than the legacy library.
+external_models:
+  base_path: /opt/ComfyUI/models/external
+  checkpoints: checkpoints
+  text_encoders: |
+    text_encoders
+    clip
+  clip_vision: clip_vision
+  configs: configs
+  controlnet: controlnet
+  diffusion_models: |
+    diffusion_models
+    unet
+  embeddings: embeddings
+  loras: loras
+  upscale_models: upscale_models
+  vae: vae
+  audio_encoders: audio_encoders
+  model_patches: model_patches
