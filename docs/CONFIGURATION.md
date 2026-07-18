@@ -81,8 +81,15 @@ one can produce a successful image build that fails when a workflow executes.
 | `COMFYUI_SHARED_GID` | Supplementary runtime group for shared assets |
 | `COMFYUI_UMASK` | Default `0002`, preserving group write access |
 
+Use `COMFYUI_SHARED_GID` when an existing shared workflow or model directory is
+already group-owned and the container should use that group's permissions without
+changing host ownership. For example, a shared directory owned by group `1002`
+can use `COMFYUI_SHARED_GID=1002` when its mode grants the needed access.
+
 Changing `PUID` or `PGID` requires an image rebuild and may require deliberate
-ownership repair on bind mounts or the named Python volume.
+ownership repair on bind mounts or the named Python volume. Changing
+`COMFYUI_SHARED_GID` changes supplementary group access at runtime and does not
+change host ownership by itself.
 
 ## Persistent paths
 
