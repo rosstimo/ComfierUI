@@ -193,7 +193,7 @@ resolve_latest_snapshot() {
         | jq -r 'if length == 0 then empty else max_by(.time).id end'
 }
 
-restore_snapshot() {
+stage_snapshot() {
     requested="${1:-latest}"
     target="${2:-}"
 
@@ -213,20 +213,20 @@ restore_snapshot() {
     case "${target}" in
         /backups/restore|/backups/restore/*) ;;
         *)
-            log "ERROR: Built-in restore targets must stay under /backups/restore."
+            log "ERROR: Built-in staging targets must stay under /backups/restore."
             exit 2
             ;;
     esac
 
     if [ -d "${target}" ] && [ -n "$(find "${target}" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
-        log "ERROR: Restore target is not empty: ${target}"
+        log "ERROR: Staging target is not empty: ${target}"
         exit 1
     fi
 
     mkdir -p "${target}"
     restic restore "${requested}" --target "${target}"
-    log "Restore complete: ${target}"
-    log "The live deployment was not modified. Inspect staged files before copying anything back."
+    log "Snapshot staged for inspection: ${target}"
+    log "The live deployment was not modified."
 }
 
 run_daemon() {
@@ -287,11 +287,11 @@ case "${command}" in
     daemon) run_daemon ;;
     backup-now) run_backup ;;
     snapshots) restic snapshots --tag "${backup_tag}" ;;
-    restore) restore_snapshot "${1:-latest}" "${2:-}" ;;
+    stage) stage_snapshot "${1:-latest}" "${2:-}" ;;
     check) restic check ;;
     maintenance) apply_retention ;;
     *)
-        echo "Usage: $0 [daemon|backup-now|snapshots|restore [SNAPSHOT] [TARGET]|check|maintenance]" >&2
+        echo "Usage: $0 [daemon|backup-now|snapshots|stage [SNAPSHOT] [TARGET]|check|maintenance]" >&2
         exit 2
         ;;
 esac
