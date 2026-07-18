@@ -1,3 +1,7 @@
+# Advanced external/host-managed restic exclude example.
+# Built-in automatic backups use explicit COMFYUI_BACKUP_INCLUDE_* categories
+# instead of this file.
+
 # Runtime caches and scratch files
 **/cache/**
 **/temp/**
@@ -6,4 +10,3 @@
 
 # Repository metadata is already preserved by Git
 **/.git/**
-
