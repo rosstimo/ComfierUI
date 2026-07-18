@@ -56,6 +56,9 @@ services:
       COMFYUI_BACKUP_INCLUDE_MODELS: "${COMFYUI_BACKUP_INCLUDE_MODELS:-false}"
       COMFYUI_BACKUP_INCLUDE_EXTRA_MODELS: "${COMFYUI_BACKUP_INCLUDE_EXTRA_MODELS:-false}"
       COMFYUI_BACKUP_INCLUDE_PYTHON: "${COMFYUI_BACKUP_INCLUDE_PYTHON:-false}"
+      COMFYUI_BACKUP_INCLUDE_FILE: /config/backup-includes.txt
+      COMFYUI_BACKUP_EXCLUDE_FILE: /config/backup-excludes.txt
+      COMFYUI_BACKUP_EXCLUDE_LARGER_THAN: "${COMFYUI_BACKUP_EXCLUDE_LARGER_THAN:-}"
       COMFYUI_BACKUP_COMPOSE_FILES: "${COMPOSE_FILE:-compose.yaml}"
       COMFYUI_EXTRA_MODELS_PATH_CONFIGURED: "${COMFYUI_EXTRA_MODELS_PATH:-}"
     volumes:
@@ -90,6 +93,18 @@ services:
       - type: bind
         source: "${COMFYUI_BACKUP_PATH:-./backups}"
         target: /backups
+      - type: bind
+        source: "${COMFYUI_BACKUP_INCLUDE_FILE:-./config/backup-includes.txt.example}"
+        target: /config/backup-includes.txt
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${COMFYUI_BACKUP_EXCLUDE_FILE:-./config/backup-excludes.txt.example}"
+        target: /config/backup-excludes.txt
+        read_only: true
+        bind:
+          create_host_path: false
       - type: bind
         source: ./docker/backup-service.sh
         target: /usr/local/bin/comfierui-backup-service
