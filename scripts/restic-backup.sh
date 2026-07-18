@@ -31,6 +31,22 @@ backup_tag="${RESTIC_TAG:-comfierui}"
 data_path="$(resolve_host_path "$(env_get COMFYUI_DATA_PATH ./data)" "${repo_root}")"
 models_path="$(resolve_host_path "$(env_get COMFYUI_MODELS_PATH ./data/models)" "${repo_root}")"
 workflows_path="$(resolve_host_path "$(env_get COMFYUI_WORKFLOWS_PATH ./data/workflows)" "${repo_root}")"
+extra_models_setting="$(env_get COMFYUI_EXTRA_MODELS_PATH "" .env)"
+extra_models_path=""
+if [[ -n "${extra_models_setting}" ]]; then
+    extra_models_path="$(resolve_host_path "${extra_models_setting}" "${repo_root}")"
+fi
+
+if bool_true "${COMFYUI_BACKUP_EXTRA_MODELS:-false}" && [[ -z "${extra_models_path}" ]]; then
+    echo "ERROR: COMFYUI_BACKUP_EXTRA_MODELS=true but COMFYUI_EXTRA_MODELS_PATH is not configured in .env." >&2
+    exit 1
+fi
+
+# Fail before stopping ComfyUI when the repository cannot be opened with the
+# configured credentials. This also catches an uninitialized repository.
+echo "Checking restic repository access..."
+restic snapshots --latest 1 >/dev/null
+
 staging="$(mktemp -d "${TMPDIR:-/tmp}/comfierui-backup.XXXXXX")"
 source_list="$(mktemp)"
 was_running=false
@@ -74,11 +90,9 @@ container_id="$(docker compose ps -q comfyui 2>/dev/null || true)"
 } > "${staging}/recovery-manifest.txt"
 add_required "${staging}/recovery-manifest.txt"
 
-if bool_true "${COMFYUI_BACKUP_STOP_SERVICE:-true}"; then
-    if docker compose ps --status running --services | grep -qx comfyui; then
-        was_running=true
-        docker compose stop comfyui
-    fi
+if [[ ! -f "${repo_root}/.env" ]]; then
+    echo "ERROR: Missing ${repo_root}/.env. Run scripts/init.sh first." >&2
+    exit 1
 fi
 
 if bool_true "${COMFYUI_BACKUP_LOCAL_CONFIG:-true}"; then
@@ -99,6 +113,16 @@ bool_true "${COMFYUI_BACKUP_WORKFLOWS:-true}" && add_required "${workflows_path}
 bool_true "${COMFYUI_BACKUP_INPUT:-true}" && add_optional "${data_path}/input"
 bool_true "${COMFYUI_BACKUP_OUTPUT:-false}" && add_optional "${data_path}/output"
 bool_true "${COMFYUI_BACKUP_MODELS:-false}" && add_required "${models_path}"
+if bool_true "${COMFYUI_BACKUP_EXTRA_MODELS:-false}"; then
+    add_required "${extra_models_path}"
+fi
+
+if bool_true "${COMFYUI_BACKUP_STOP_SERVICE:-true}"; then
+    if docker compose ps --status running --services | grep -qx comfyui; then
+        was_running=true
+        docker compose stop comfyui
+    fi
+fi
 
 if bool_true "${COMFYUI_BACKUP_PYTHON_VOLUME:-false}"; then
     volume_name="$(
@@ -117,6 +141,17 @@ if bool_true "${COMFYUI_BACKUP_PYTHON_VOLUME:-false}"; then
         alpine:3.22 \
         tar -C /volume -cf /backup/comfyui-python.tar .
     add_required "${staging}/comfyui-python.tar"
+fi
+
+echo
+printf 'Backup tag: %s\n' "${backup_tag}"
+echo "Backup sources:"
+sed 's/^/  /' "${source_list}"
+echo
+if bool_true "${COMFYUI_BACKUP_WORKFLOWS:-true}" \
+    || bool_true "${COMFYUI_BACKUP_INPUT:-true}" \
+    || bool_true "${COMFYUI_BACKUP_OUTPUT:-false}"; then
+    echo "NOTE: This snapshot may contain credentials or private workflow/image metadata."
 fi
 
 restic backup \
