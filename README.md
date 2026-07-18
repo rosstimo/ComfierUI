@@ -243,23 +243,37 @@ http://comfyui:8188
 
 See [Networking](docs/NETWORKING.md).
 
-## Backup and restore
+## Built-in automatic backup and restore
 
-Restic examples are included for configuration, workflows, custom nodes, user
-state, and optionally models, outputs, and the Python environment.
+ComfierUI includes an opt-in Docker-managed backup sidecar. Normal users do not
+need restic, cron, or systemd installed on the host.
 
-```bash
-cp config/restic.env.example config/restic.env
-cp config/restic-excludes.txt.example config/restic-excludes.txt
-chmod 600 config/restic.env
-$EDITOR config/restic.env
+Enable it in `.env`:
 
-bash scripts/restic-backup.sh
-bash scripts/restic-restore.sh latest /tmp/comfierui-restore
+```dotenv
+COMFYUI_BACKUP_ENABLED=true
 ```
 
-Read [Backup and restore](docs/BACKUP_RESTORE.md) before enabling the included
-systemd timers.
+With the default configuration it automatically creates encrypted backups of the
+important small recovery state: deployment configuration, custom nodes, user and
+Manager state, and workflows. Inputs, outputs, models, the extra/legacy model
+library, and the Python volume are excluded unless explicitly enabled.
+
+The default schedule is one backup every 24 hours, keeping 7 daily, 4 weekly, 12
+monthly, and 3 yearly recovery points, plus the latest 3 snapshots. The local
+backup repository, generated password, and staged restores live under
+`./backups/`, which is ignored by Git.
+
+Workflow files can contain API keys or tokens stored in node settings, and ComfyUI
+images can embed workflow metadata. Keep workflows and image directories out of
+Git and treat backup repositories and restored data as sensitive.
+
+The built-in restore flow always restores into a staging directory rather than
+overwriting the live deployment.
+
+Read [Backup and restore](docs/BACKUP_RESTORE.md) for include/exclude toggles,
+schedule and retention settings, manual backups, staged restores, and advanced
+external/offsite backup options.
 
 ## Documentation
 
