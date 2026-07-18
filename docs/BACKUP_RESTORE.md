@@ -116,6 +116,12 @@ ComfyUI-generated images may embed workflow metadata. Models default to off
 because they frequently dominate backup size. The Python volume defaults to off
 because it can be large and is often reusable across normal rollbacks.
 
+Models are nevertheless a very reasonable category to enable. A model that is
+publicly downloadable today may later become private, gated, renamed, deleted,
+or otherwise unavailable from the original source. Private, modified, obscure,
+or difficult-to-source models should be treated as irreplaceable data rather
+than merely reproducible cache.
+
 A restore can only restore categories present in that snapshot. Categories that
 were excluded are left untouched in the live deployment. For example, the
 normal default restore rolls back configuration, custom nodes, user/Manager
@@ -131,6 +137,83 @@ COMFYUI_BACKUP_INCLUDE_PYTHON=true
 Without that option, a live restore leaves the current persistent Python volume
 in place. This is usually convenient, but it is not a bit-for-bit rollback of
 custom-node Python package versions.
+
+## Fine-grained include and exclude policy
+
+The broad `COMFYUI_BACKUP_INCLUDE_*` settings are the normal interface, but the
+built-in backup can be made substantially more selective or much larger.
+
+Two optional local policy files are supported:
+
+```text
+config/backup-includes.txt
+config/backup-excludes.txt
+```
+
+Both are ignored by Git. Tracked `.example` files document the syntax.
+
+Point `.env` at local copies:
+
+```dotenv
+COMFYUI_BACKUP_INCLUDE_FILE=./config/backup-includes.txt
+COMFYUI_BACKUP_EXCLUDE_FILE=./config/backup-excludes.txt
+```
+
+The include file adds individual files or subtrees from the backup container's
+read-only source mounts. Useful roots are:
+
+```text
+/source/repo
+/source/data
+/source/workflows
+/source/models
+/source/extra-models
+/source/python
+```
+
+For example, models can remain globally excluded while a few hard-to-replace
+assets are explicitly protected:
+
+```text
+/source/models/checkpoints/rare-model.safetensors
+/source/models/loras/private-collection
+/source/extra-models/checkpoints/unavailable
+```
+
+Or enable an entire category and use restic exclude patterns to omit replaceable
+content:
+
+```dotenv
+COMFYUI_BACKUP_INCLUDE_MODELS=true
+COMFYUI_BACKUP_EXCLUDE_FILE=./config/backup-excludes.txt
+```
+
+Example exclusion:
+
+```text
+/source/models/checkpoints/easily-redownloaded/**
+```
+
+The optional global size ceiling can prevent unexpectedly large files from
+entering the payload:
+
+```dotenv
+COMFYUI_BACKUP_EXCLUDE_LARGER_THAN=20G
+```
+
+Leave it empty for no file-size ceiling. Do not set a ceiling when the point of
+the backup is to preserve large model files.
+
+Custom include paths are restricted to `/source/...` so they cannot accidentally
+back up the restic repository into itself. Restic exclude patterns are applied
+to content beneath selected directory sources. The effective include/exclude
+policy is copied into each recovery blueprint so the snapshot records not just
+what broad categories were enabled, but also the finer policy used at backup
+time.
+
+The recovery blueprint inventories model, Python-package, input, and output state
+even when those payload categories are excluded. See
+[Recovery blueprint](RECOVERY_BLUEPRINT.md).
 
 ## Sensitive workflows and images
 
@@ -309,14 +392,22 @@ The read-only `COMFYUI_EXTRA_MODELS_PATH` library is intentionally excluded from
 the normal built-in backup. It is commonly very large and may already be managed
 independently.
 
-To opt in, add the extra-model backup mount layer and enable the category:
+When `COMFYUI_EXTRA_MODELS_PATH` is configured, the backup sidecar mounts it
+read-only for recovery-blueprint inventory automatically. The files themselves
+are only copied into restic when explicitly enabled:
 
 ```dotenv
-COMPOSE_FILE=compose.yaml:compose.nvidia.yaml:compose.extra-models.yaml:compose.backup.yaml:compose.backup-extra-models.yaml
 COMFYUI_BACKUP_INCLUDE_EXTRA_MODELS=true
 ```
 
-Use only the accelerator and optional layers appropriate for your deployment.
+The normal writable model tree works the same way:
+
+```dotenv
+COMFYUI_BACKUP_INCLUDE_MODELS=true
+```
+
+Use the fine-grained include/exclude policy when only selected rare or private
+model trees should be preserved.
 
 ## Advanced: external and host-managed backups
 
@@ -366,7 +457,8 @@ A backup is not proven until a restore succeeds. Periodically verify:
 - `bash scripts/backup.sh check` succeeds,
 - `bash scripts/backup.sh stage SNAPSHOT` contains a known workflow and user-state file,
 - a real `bash scripts/backup.sh restore SNAPSHOT` can reconstruct a known working deployment,
-- any separately managed models or outputs are recoverable from their own backup.
+- the recovery blueprint accurately inventories deliberately excluded model and environment state,
+- any irreplaceable assets excluded from restic are recoverable from their own independent backup.
 
 The built-in backup is a convenience recovery layer. Important installations
 should still maintain at least one independent copy on another disk, system, or
