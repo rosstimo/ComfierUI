@@ -187,22 +187,22 @@ resolve_python_volume() {
     local project_name volume_name
 
     project_name="$(env_get COMPOSE_PROJECT_NAME comfierui)"
-    volume_name="$({
+    volume_name="$(
         docker volume ls -q \
             --filter "label=com.docker.compose.project=${project_name}" \
             --filter 'label=com.docker.compose.volume=comfyui-python' \
         | head -n1
-    })"
+    )"
 
     if [[ -z "${volume_name}" ]]; then
         echo "Creating Compose resources so the Python volume exists..." >&2
         docker compose create comfyui >/dev/null
-        volume_name="$({
+        volume_name="$(
             docker volume ls -q \
                 --filter "label=com.docker.compose.project=${project_name}" \
                 --filter 'label=com.docker.compose.volume=comfyui-python' \
             | head -n1
-        })"
+        )"
     fi
 
     if [[ -z "${volume_name}" ]]; then
