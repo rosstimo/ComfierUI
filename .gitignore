@@ -17,6 +17,14 @@ data/
 /temp/
 /images/
 
+# Backup and restore data
+# Built-in backups, generated restic passwords, repositories, and staged restores
+# are runtime data and may contain encrypted or restored sensitive content.
+/backup/
+/backups/
+/restore/
+/restores/
+
 # Python and editor artifacts
 __pycache__/
 *.py[cod]
