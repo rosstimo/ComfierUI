@@ -195,6 +195,7 @@ apply_retention() {
 }
 
 run_backup() {
+    apply_retention_after="${1:-true}"
     source_list="$(mktemp)"
     trap 'rm -f "${source_list}"' INT TERM HUP EXIT
 
@@ -225,7 +226,11 @@ run_backup() {
 
     restic "$@"
 
-    apply_retention
+    if is_true "${apply_retention_after}"; then
+        apply_retention
+    else
+        log "Retention deferred for this manual/safety snapshot. Automatic backups or 'maintenance' will apply the configured policy later."
+    fi
     date +%s > "${last_success_file}"
     log "Backup complete."
 
@@ -317,7 +322,7 @@ run_daemon() {
             sleep "${wait_seconds}"
         fi
 
-        if ! run_backup; then
+        if ! run_backup true; then
             log "ERROR: Backup failed. Retrying in ${retry_minutes} minute(s)."
             sleep "${retry_seconds}"
         fi
@@ -330,7 +335,7 @@ command="${1:-daemon}"
 shift || true
 case "${command}" in
     daemon) run_daemon ;;
-    backup-now) run_backup ;;
+    backup-now) run_backup false ;;
     snapshots) restic snapshots --tag "${backup_tag}" ;;
     stage) stage_snapshot "${1:-latest}" "${2:-}" ;;
     check) restic check ;;
