@@ -35,20 +35,20 @@ from pathlib import Path
 uid, gid, shared_gid = map(int, sys.argv[1:4])
 data_path = Path(sys.argv[4])
 items = [
-    ("data root", data_path, True),
-    ("cache", data_path / "cache", True),
-    ("custom_nodes", data_path / "custom_nodes", True),
-    ("home", data_path / "home", True),
-    ("input", data_path / "input", True),
-    ("output", data_path / "output", True),
-    ("temp", data_path / "temp", True),
-    ("user", data_path / "user", True),
-    ("user/default", data_path / "user" / "default", True),
-    ("models", Path(sys.argv[5]), False),
-    ("workflows", Path(sys.argv[6]), True),
+    ("data root", data_path, True, False),
+    ("cache", data_path / "cache", True, False),
+    ("custom_nodes", data_path / "custom_nodes", True, False),
+    ("home", data_path / "home", True, False),
+    ("input", data_path / "input", True, False),
+    ("output", data_path / "output", True, False),
+    ("temp", data_path / "temp", True, False),
+    ("user", data_path / "user", True, False),
+    ("user/default", data_path / "user" / "default", True, False),
+    ("models", Path(sys.argv[5]), False, False),
+    ("workflows", Path(sys.argv[6]), True, False),
 ]
 if sys.argv[7]:
-    items.append(("extra models (read-only)", Path(sys.argv[7]), False))
+    items.append(("extra models", Path(sys.argv[7]), False, True))
 groups = {gid, shared_gid}
 failures = 0
 
@@ -65,8 +65,9 @@ def permissions_for(path: Path) -> int:
     return mode & 0b111
 
 
-for label, path, write_required in items:
-    print(f"--- {label}: {path} ---")
+for label, path, write_required, mount_read_only in items:
+    suffix = " (read-only mount)" if mount_read_only else ""
+    print(f"--- {label}{suffix}: {path} ---")
     if not path.exists():
         print("FAIL  path is missing")
         failures += 1
@@ -94,7 +95,13 @@ for label, path, write_required in items:
     writable = bool(bits & 0b010)
     traversable = not path.is_dir() or bool(bits & 0b001)
     print(f"container read: {'yes' if readable else 'NO'}")
-    print(f"container write: {'yes' if writable else 'NO'}")
+    if mount_read_only:
+        print(
+            "container write: blocked by read-only mount "
+            f"(host path permission: {'yes' if writable else 'NO'})"
+        )
+    else:
+        print(f"container write: {'yes' if writable else 'NO'}")
     print(f"container traverse: {'yes' if traversable else 'NO'}")
 
     if not readable or not traversable or (write_required and not writable):
@@ -111,10 +118,18 @@ cat <<EOF
 
 Container identity: ${puid}:${pgid}; supplementary shared GID: ${shared_gid}
 
+PUID/PGID set the container's primary user and group. COMFYUI_SHARED_GID adds
+one supplementary group so the container can use existing group permissions
+without changing host ownership. For example, a shared directory owned by group
+1002 can be accessed by setting COMFYUI_SHARED_GID=1002 when its mode permits it.
+
 For new repository-local data, a typical repair is:
   sudo chown -R ${puid}:${pgid} "${data_path}"
   sudo chmod -R u+rwX,g+rwX,o-rwx "${data_path}"
   sudo find "${data_path}" -type d -exec chmod g+s {} +
+
+chown/chgrp change host ownership; chmod changes host permission bits. Prefer
+COMFYUI_SHARED_GID for an existing shared group before changing ownership.
 
 The built-in model tree should normally remain writable for Manager downloads:
   ${models_path}
