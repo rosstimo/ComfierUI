@@ -148,46 +148,88 @@ repository data. Unchanged content is deduplicated between snapshots.
 These values are intentionally conservative for the default small backup set.
 Including large model or image trees can make pruning take substantially longer.
 
-### Status and manual backup
+## Everyday backup commands
 
-Check the service:
+Normal users can manage the built-in backup with one helper:
 
 ```bash
-docker compose ps backup backup-init
-docker compose logs --tail=100 backup
+bash scripts/backup.sh status
+bash scripts/backup.sh now
+bash scripts/backup.sh list
+bash scripts/backup.sh inspect SNAPSHOT
+bash scripts/backup.sh restore SNAPSHOT
+bash scripts/backup.sh check
+bash scripts/backup.sh maintenance
+bash scripts/backup.sh logs
+```
+
+`list` shows the available encrypted restic snapshots and their IDs. This is the
+normal starting point when deciding what can be restored.
+
+```bash
+bash scripts/backup.sh list
+```
+
+Before restoring, inspect a selected snapshot:
+
+```bash
+bash scripts/backup.sh inspect a1b2c3d4
+```
+
+To narrow inspection to one path inside the snapshot, pass that path too:
+
+```bash
+bash scripts/backup.sh inspect a1b2c3d4 /source/workflows
 ```
 
 Run an immediate backup without changing the automatic schedule:
 
 ```bash
-docker compose exec backup \
-  /bin/sh /usr/local/bin/comfierui-backup backup-now
-```
-
-List snapshots:
-
-```bash
-docker compose exec backup \
-  /bin/sh /usr/local/bin/comfierui-backup snapshots
+bash scripts/backup.sh now
 ```
 
 Verify the repository structure:
 
 ```bash
-docker compose exec backup \
-  /bin/sh /usr/local/bin/comfierui-backup check
+bash scripts/backup.sh check
 ```
+
+The helper uses the running backup container. Automatic backups themselves do not
+depend on this script; the container continues scheduling backups on its own.
 
 ## Safe staged restore
 
 The built-in restore command never writes directly into the live ComfyUI data.
 It restores to a new staging directory under `/backups/restore`.
 
-Restore the latest ComfierUI snapshot:
+The normal recovery flow is:
+
+```text
+list → inspect → restore to staging → inspect staged files → deliberately recover
+```
+
+List the available snapshots:
 
 ```bash
-docker compose exec backup \
-  /bin/sh /usr/local/bin/comfierui-backup restore latest
+bash scripts/backup.sh list
+```
+
+Inspect the one you are considering:
+
+```bash
+bash scripts/backup.sh inspect a1b2c3d4
+```
+
+Restore that snapshot:
+
+```bash
+bash scripts/backup.sh restore a1b2c3d4
+```
+
+Or restore the newest snapshot tagged for this ComfierUI deployment:
+
+```bash
+bash scripts/backup.sh restore latest
 ```
 
 The command prints the container path, for example:
@@ -290,7 +332,7 @@ restored data should remain outside Git.
 A backup is not proven until a restore succeeds. Periodically verify:
 
 - the backup service is running and producing snapshots,
-- `restic check` succeeds,
+- `bash scripts/backup.sh check` succeeds,
 - a staged restore contains a known workflow and user-state file,
 - a representative restored configuration can reconstruct the deployment,
 - any separately managed models or outputs are recoverable from their own backup.
