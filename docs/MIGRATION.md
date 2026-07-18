@@ -8,12 +8,13 @@ checkout, cache tree, or complete custom-node directory into the new system.
 Recommended order:
 
 1. Start with new local data and run one core workflow.
-2. Point the model mount at the existing library.
-3. Point at or selectively copy workflows.
-4. Move only needed inputs and selected outputs.
-5. Load one workflow at a time and install its required node packs.
-6. Migrate compatible user settings.
-7. Prove backup and rollback before retiring the old installation.
+2. Add the existing model library as a read-only extra model source.
+3. Verify both an old model and a newly Manager-installed model.
+4. Point at or selectively copy workflows.
+5. Move only needed inputs and selected outputs.
+6. Load one workflow at a time and install its required node packs.
+7. Migrate compatible user settings.
+8. Prove backup and rollback before retiring the old installation.
 
 ## Inventory before changing anything
 
@@ -29,18 +30,58 @@ du -sh /path/to/old/models
 
 ## Models
 
-Reuse a large library with a bind mount:
+Keep the new deployment's normal writable model directory:
 
 ```dotenv
-COMFYUI_MODELS_PATH=/absolute/path/to/old/models
-COMFYUI_SHARED_GID=<numeric group owning the library>
+COMFYUI_MODELS_PATH=./data/models
 ```
 
-Run `scripts/check-permissions.sh`. Preserve owner/group policy unless a change
-is intentional.
+This is where Manager installs new models. Do not replace it with the old model
+library unless you deliberately want all new downloads mixed into that library.
 
-When model categories span several independent roots, use the extra-model-path
-examples rather than creating undocumented symlinks inside the container.
+Instead, expose the old library separately:
+
+```dotenv
+COMFYUI_EXTRA_MODELS_PATH=/absolute/path/to/old/models
+COMFYUI_SHARED_GID=<numeric group that can read the library>
+```
+
+Then rerun initialization and preflight:
+
+```bash
+bash scripts/init.sh
+bash scripts/preflight.sh
+```
+
+Initialization enables `compose.extra-models.yaml`, pre-creates the nested mount
+point, mounts the old library read-only at
+`/opt/ComfyUI/models/external`, and passes
+`config/extra_model_paths.yaml` to ComfyUI.
+
+The result is intentionally split:
+
+- old/shared models remain in the existing library and are read-only to the
+  container,
+- new Manager downloads go to `COMFYUI_MODELS_PATH`, normally `./data/models`,
+- both sets appear in ComfyUI's model selectors for configured standard model
+  categories.
+
+Verify the migration with both directions before moving on:
+
+1. Generate an image with an old checkpoint from the extra library.
+2. Install a new model through Manager and generate with it.
+3. Confirm the new file appeared under `COMFYUI_MODELS_PATH`.
+4. Confirm the old library was not modified.
+
+Custom-node-specific directories such as face-restoration, InsightFace, LLM, or
+other node-pack-owned model trees are not guessed automatically. Configure those
+only after installing the node pack that uses them and checking its documented
+paths.
+
+When model categories span several independent roots, use the customizable
+`config/extra_model_paths.yaml.example` and
+`examples/compose.extra-model-paths.yaml` examples rather than creating
+undocumented container symlinks.
 
 ## Workflows
 
@@ -78,7 +119,8 @@ clean current configuration is often safer than restoring every cache file.
 
 Keep the old service disabled but intact until the new deployment proves:
 
-- model visibility and writes where intended,
+- old and new model visibility,
+- new model downloads write only where intended,
 - core and representative custom-node workflows,
 - auxiliary model downloads,
 - output saving,
