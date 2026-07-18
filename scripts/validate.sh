@@ -27,12 +27,19 @@ validate_compose() {
 validate_compose "base Compose" -f compose.yaml
 validate_compose "NVIDIA Compose" -f compose.yaml -f compose.nvidia.yaml
 validate_compose "CPU Compose" -f compose.yaml -f compose.cpu.yaml
+validate_compose "built-in backup Compose" \
+    -f compose.yaml -f compose.nvidia.yaml -f compose.backup.yaml
 COMFYUI_EXTERNAL_NETWORK=validation-network \
     validate_compose "external-network Compose" \
         -f compose.yaml -f compose.nvidia.yaml -f compose.external-network.yaml
 COMFYUI_EXTRA_MODELS_PATH=/tmp/comfierui-validation-models \
     validate_compose "external-model-library Compose" \
         -f compose.yaml -f compose.nvidia.yaml -f compose.extra-models.yaml
+COMFYUI_EXTRA_MODELS_PATH=/tmp/comfierui-validation-models \
+COMFYUI_BACKUP_PATH=/tmp/comfierui-validation-backups \
+    validate_compose "backup plus extra-model backup Compose" \
+        -f compose.yaml -f compose.nvidia.yaml -f compose.extra-models.yaml \
+        -f compose.backup.yaml -f compose.backup-extra-models.yaml
 validate_compose "extra-model-paths example" \
     -f compose.yaml -f compose.nvidia.yaml -f examples/compose.extra-model-paths.yaml
 
