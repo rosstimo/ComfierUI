@@ -3,6 +3,7 @@
 ARG BASE_IMAGE=nvidia/cuda:13.0.0-base-ubuntu24.04
 FROM ${BASE_IMAGE}
 
+ARG BASE_IMAGE
 ARG DEBIAN_FRONTEND=noninteractive
 ARG COMFYUI_REPO=https://github.com/Comfy-Org/ComfyUI.git
 ARG COMFYUI_REF=v0.28.0
@@ -70,7 +71,18 @@ RUN python3 -m venv /opt/venv \
          /opt/venv/bin/python -m pip install -r /opt/ComfyUI/manager_requirements.txt; \
        fi
 
-RUN printf 'PYTORCH_VERSION=%s\nTORCHVISION_VERSION=%s\nTORCHAUDIO_VERSION=%s\nTORCH_INDEX_URL=%s\n' \
+# Keep authoritative build inputs inside the image. The running container combines
+# these with the actual installed runtime state and persists a recovery record.
+RUN printf 'BASE_IMAGE=%s\nCOMFYUI_REF=%s\nPYTORCH_BUILD_VERSION=%s\nTORCHVISION_BUILD_VERSION=%s\nTORCHAUDIO_BUILD_VERSION=%s\nTORCH_INDEX_URL=%s\nCOMFYUI_COMMIT=%s\n' \
+        "${BASE_IMAGE}" \
+        "${COMFYUI_REF}" \
+        "${PYTORCH_VERSION}" \
+        "${TORCHVISION_VERSION}" \
+        "${TORCHAUDIO_VERSION}" \
+        "${TORCH_INDEX_URL}" \
+        "$(cat /opt/comfyui-commit)" \
+        > /opt/comfierui-build-state.env \
+    && printf 'PYTORCH_VERSION=%s\nTORCHVISION_VERSION=%s\nTORCHAUDIO_VERSION=%s\nTORCH_INDEX_URL=%s\n' \
         "${PYTORCH_VERSION}" "${TORCHVISION_VERSION}" "${TORCHAUDIO_VERSION}" "${TORCH_INDEX_URL}" \
         > /opt/pytorch-install.env \
     && { \
@@ -85,6 +97,7 @@ RUN printf 'PYTORCH_VERSION=%s\nTORCHVISION_VERSION=%s\nTORCHAUDIO_VERSION=%s\nT
         sha256sum /opt/ComfyUI/manager_requirements.txt; \
       fi; \
     } | sha256sum | awk '{print $1}' | tee /opt/comfierui-build-id /opt/venv/.comfierui-build-id \
+    && printf 'COMFYUI_BUILD_ID=%s\n' "$(cat /opt/comfierui-build-id)" >> /opt/comfierui-build-state.env \
     && mkdir -p \
         /data/cache \
         /data/home \
