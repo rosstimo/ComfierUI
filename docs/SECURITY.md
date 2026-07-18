@@ -25,20 +25,30 @@ Before changing the bind address to `0.0.0.0`:
 - put authentication at a reverse proxy, VPN, or tunnel boundary,
 - keep Manager away from unauthenticated public access.
 
-## Secrets and metadata
+## Secrets, workflows, and image metadata
 
 Do not commit:
 
 - `.env`,
 - API keys or access tokens,
 - restic credentials or password files,
-- private workflows,
-- private input/output assets,
+- workflows unless they have been deliberately audited and sanitized,
+- input/output images or other ComfyUI image directories,
 - Manager configuration containing credentials.
 
-Workflow JSON and PNG metadata can contain prompts, filenames, URLs, and tokens.
-`scripts/audit-workflows.py` detects several obvious shapes but is not proof that
-a file is safe.
+Workflow JSON can persist node values, including credentials entered into downloader
+or API nodes. ComfyUI-generated images can embed workflows, prompts, filenames,
+URLs, and other metadata; if a saved workflow contains a secret, an image carrying
+that workflow metadata may repeat the same secret.
+
+The repository `.gitignore` therefore excludes the default `data/` tree plus common
+repo-local workflow and image runtime directories such as `workflows/`, `input/`,
+`output/`, `temp/`, and `images/`. These ignores are guardrails, not sanitizers:
+`git add -f`, alternate directory names, or files committed before the ignore rule
+can still publish sensitive data.
+
+`scripts/audit-workflows.py` detects several obvious secret shapes but is not proof
+that a workflow or image is safe to publish.
 
 ## Git history
 

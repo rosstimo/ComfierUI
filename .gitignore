@@ -7,7 +7,15 @@ compose.local.yaml
 compose.extra-model-paths.yaml
 
 # Persistent runtime data
+# Workflows may contain API keys/tokens, and ComfyUI images may embed workflow,
+# prompt, filename, URL, or credential-bearing metadata. Keep runtime artifacts
+# out of Git by default even when paths are moved outside ./data.
 data/
+/workflows/
+/input/
+/output/
+/temp/
+/images/
 
 # Python and editor artifacts
 __pycache__/
