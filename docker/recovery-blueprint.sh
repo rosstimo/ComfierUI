@@ -82,6 +82,7 @@ include_output=${COMFYUI_BACKUP_INCLUDE_OUTPUT:-false}
 include_models=${COMFYUI_BACKUP_INCLUDE_MODELS:-false}
 include_extra_models=${COMFYUI_BACKUP_INCLUDE_EXTRA_MODELS:-false}
 include_python=${COMFYUI_BACKUP_INCLUDE_PYTHON:-false}
+exclude_larger_than=${COMFYUI_BACKUP_EXCLUDE_LARGER_THAN:-}
 EOF
 
 cat > "${output_dir}/README.txt" <<'EOF'
@@ -91,6 +92,8 @@ This directory describes the known state at backup time, including reproducible
 or large items that may not be stored in the backup payload itself.
 
 state.env             Portable version/configuration pins and backup coverage.
+backup-includes.txt   Effective custom additional-source policy for this snapshot.
+backup-excludes.txt   Effective restic exclusion policy for this snapshot.
 custom-nodes.tsv      Custom-node directory names and Git commits when detectable.
 python-packages.tsv   Installed Python package names and versions found in the venv.
 models.tsv            Writable model-library file inventory (size and relative path).
@@ -107,6 +110,19 @@ absolute paths are intentionally not treated as portable recovery pins. A fresh
 host should detect or configure those values locally while reusing the portable
 version pins and backed-up application state.
 EOF
+
+include_policy="${COMFYUI_BACKUP_INCLUDE_FILE:-/config/backup-includes.txt}"
+exclude_policy="${COMFYUI_BACKUP_EXCLUDE_FILE:-/config/backup-excludes.txt}"
+if [ -r "${include_policy}" ]; then
+    cp "${include_policy}" "${output_dir}/backup-includes.txt"
+else
+    : > "${output_dir}/backup-includes.txt"
+fi
+if [ -r "${exclude_policy}" ]; then
+    cp "${exclude_policy}" "${output_dir}/backup-excludes.txt"
+else
+    : > "${output_dir}/backup-excludes.txt"
+fi
 
 : > "${output_dir}/custom-nodes.tsv"
 if [ -d /source/data/custom_nodes ]; then
