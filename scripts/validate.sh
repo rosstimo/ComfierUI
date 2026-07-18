@@ -37,9 +37,9 @@ COMFYUI_EXTRA_MODELS_PATH=/tmp/comfierui-validation-models \
         -f compose.yaml -f compose.nvidia.yaml -f compose.extra-models.yaml
 COMFYUI_EXTRA_MODELS_PATH=/tmp/comfierui-validation-models \
 COMFYUI_BACKUP_PATH=/tmp/comfierui-validation-backups \
-    validate_compose "backup plus extra-model backup Compose" \
+    validate_compose "backup with extra-model inventory Compose" \
         -f compose.yaml -f compose.nvidia.yaml -f compose.extra-models.yaml \
-        -f compose.backup.yaml -f compose.backup-extra-models.yaml
+        -f compose.backup.yaml
 validate_compose "extra-model-paths example" \
     -f compose.yaml -f compose.nvidia.yaml -f examples/compose.extra-model-paths.yaml
 
