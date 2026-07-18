@@ -110,29 +110,99 @@ replace_tree() {
     cp -a "${source_path}/." "${destination_path}/"
 }
 
-restore_python_volume() {
+overlay_tree() {
     local source_path="$1"
-    local project_name volume_name
+    local destination_path="$2"
+
+    [[ -d "${source_path}" ]] || return 0
+    mkdir -p "${destination_path}"
+    cp -a "${source_path}/." "${destination_path}/"
+}
+
+blueprint_value() {
+    local stage_host="$1"
+    local key="$2"
+    local fallback="${3-}"
+    local value=""
+    local candidate
+
+    for candidate in \
+        "${stage_host}/backups/state/recovery-blueprint/state.env" \
+        "${stage_host}/backups/state/recovery-manifest.txt"; do
+        if [[ -r "${candidate}" ]]; then
+            value="$(sed -n "s/^${key}=//p" "${candidate}" | tail -n1)"
+            if [[ -n "${value}" ]]; then
+                printf '%s\n' "${value}"
+                return 0
+            fi
+        fi
+    done
+
+    printf '%s\n' "${fallback}"
+}
+
+blueprint_true() {
+    local stage_host="$1"
+    local key="$2"
+    local fallback="${3:-false}"
+    bool_true "$(blueprint_value "${stage_host}" "${key}" "${fallback}")"
+}
+
+snapshot_has_partial_policy() {
+    local stage_host="$1"
+    local exclude_policy="${stage_host}/backups/state/recovery-blueprint/backup-excludes.txt"
+    local exclude_larger_than
+
+    exclude_larger_than="$(blueprint_value "${stage_host}" exclude_larger_than "")"
+    if [[ -n "${exclude_larger_than}" ]]; then
+        return 0
+    fi
+
+    if [[ -r "${exclude_policy}" ]] && \
+        grep -Ev '^[[:space:]]*($|#)' "${exclude_policy}" | grep -q .; then
+        return 0
+    fi
+
+    return 1
+}
+
+restore_complete_tree_if_applicable() {
+    local stage_host="$1"
+    local source_path="$2"
+    local destination_path="$3"
+    local include_key="$4"
+    local label="$5"
+    local snapshot_partial="$6"
 
     [[ -d "${source_path}" ]] || return 0
 
+    if blueprint_true "${stage_host}" "${include_key}" false && \
+        [[ "${snapshot_partial}" == false ]]; then
+        echo "Replacing ${label} from complete backed-up category..."
+        replace_tree "${source_path}" "${destination_path}"
+    fi
+}
+
+resolve_python_volume() {
+    local project_name volume_name
+
     project_name="$(env_get COMPOSE_PROJECT_NAME comfierui)"
-    volume_name="$(
+    volume_name="$({
         docker volume ls -q \
             --filter "label=com.docker.compose.project=${project_name}" \
             --filter 'label=com.docker.compose.volume=comfyui-python' \
         | head -n1
-    )"
+    })"
 
     if [[ -z "${volume_name}" ]]; then
-        echo "Creating Compose resources so the Python volume exists..."
+        echo "Creating Compose resources so the Python volume exists..." >&2
         docker compose create comfyui >/dev/null
-        volume_name="$(
+        volume_name="$({
             docker volume ls -q \
                 --filter "label=com.docker.compose.project=${project_name}" \
                 --filter 'label=com.docker.compose.volume=comfyui-python' \
             | head -n1
-        )"
+        })"
     fi
 
     if [[ -z "${volume_name}" ]]; then
@@ -140,12 +210,32 @@ restore_python_volume() {
         return 1
     fi
 
-    echo "Restoring backed-up Python environment volume..."
-    docker run --rm \
-        -v "${volume_name}:/target" \
-        -v "${source_path}:/source:ro" \
-        alpine:3.22 sh -c \
-        'rm -rf /target/* /target/.[!.]* /target/..?*; cp -a /source/. /target/'
+    printf '%s\n' "${volume_name}"
+}
+
+restore_python_volume() {
+    local source_path="$1"
+    local mode="${2:-replace}"
+    local volume_name
+
+    [[ -d "${source_path}" ]] || return 0
+    volume_name="$(resolve_python_volume)"
+
+    if [[ "${mode}" == replace ]]; then
+        echo "Replacing backed-up Python environment volume..."
+        docker run --rm \
+            -v "${volume_name}:/target" \
+            -v "${source_path}:/source:ro" \
+            alpine:3.22 sh -c \
+            'rm -rf /target/* /target/.[!.]* /target/..?*; cp -a /source/. /target/'
+    else
+        echo "Overlaying selectively backed-up Python files without deleting unbacked files..."
+        docker run --rm \
+            -v "${volume_name}:/target" \
+            -v "${source_path}:/source:ro" \
+            alpine:3.22 sh -c \
+            'cp -a /source/. /target/'
+    fi
 }
 
 restore_live_snapshot() {
@@ -155,6 +245,7 @@ restore_live_snapshot() {
     local apply_started=false
     local restore_complete=false
     local needs_rebuild=false
+    local snapshot_partial=false
 
     echo "Staging snapshot ${snapshot} before applying it..."
     stage_host="$(stage_snapshot "${snapshot}" | tail -n1)"
@@ -162,6 +253,12 @@ restore_live_snapshot() {
     if [[ ! -d "${stage_host}" ]]; then
         echo "ERROR: Staged restore directory was not created: ${stage_host}" >&2
         exit 1
+    fi
+
+    if snapshot_has_partial_policy "${stage_host}"; then
+        snapshot_partial=true
+        echo "Snapshot used an exclude pattern or file-size ceiling."
+        echo "Restore will preserve unbacked live files and overlay backed-up content."
     fi
 
     if comfyui_running; then
@@ -197,11 +294,12 @@ restore_live_snapshot() {
 
     apply_started=true
 
-    # Restore deployment-local configuration first. This may change the paths used
-    # by the recovered deployment, so destination paths are resolved afterward.
+    # Repository/configuration data is always overlaid rather than deleting the
+    # current checkout. Portable fresh-clone recovery can later use the recorded
+    # repository commit as the authoritative tracked-source state.
     if [[ -d "${stage_host}/source/repo" ]]; then
-        echo "Restoring deployment configuration..."
-        cp -a "${stage_host}/source/repo/." "${repo_root}/"
+        echo "Restoring backed-up deployment configuration..."
+        overlay_tree "${stage_host}/source/repo" "${repo_root}"
         needs_rebuild=true
     fi
 
@@ -214,35 +312,42 @@ restore_live_snapshot() {
         extra_models_path="$(resolve_host_path "${extra_models_path}" "${repo_root}")"
     fi
 
-    if [[ -d "${stage_host}/source/data/custom_nodes" ]]; then
-        echo "Restoring custom nodes..."
-        replace_tree "${stage_host}/source/data/custom_nodes" "${data_path}/custom_nodes"
-    fi
+    # Fully included categories with no exclusion policy can be replaced to match
+    # the snapshot. Selectively included or partially excluded categories are
+    # overlaid later so files that were never backed up are never deleted.
+    restore_complete_tree_if_applicable \
+        "${stage_host}" "${stage_host}/source/data/custom_nodes" "${data_path}/custom_nodes" \
+        include_custom_nodes "custom nodes" "${snapshot_partial}"
+    restore_complete_tree_if_applicable \
+        "${stage_host}" "${stage_host}/source/data/user" "${data_path}/user" \
+        include_user "ComfyUI and Manager user state" "${snapshot_partial}"
+    restore_complete_tree_if_applicable \
+        "${stage_host}" "${stage_host}/source/data/input" "${data_path}/input" \
+        include_input "input images" "${snapshot_partial}"
+    restore_complete_tree_if_applicable \
+        "${stage_host}" "${stage_host}/source/data/output" "${data_path}/output" \
+        include_output "output images" "${snapshot_partial}"
 
-    if [[ -d "${stage_host}/source/data/user" ]]; then
-        echo "Restoring ComfyUI and Manager user state..."
-        replace_tree "${stage_host}/source/data/user" "${data_path}/user"
+    if [[ -d "${stage_host}/source/data" ]]; then
+        echo "Overlaying backed-up ComfyUI data and selective data includes..."
+        overlay_tree "${stage_host}/source/data" "${data_path}"
         mkdir -p "${data_path}/user/default"
     fi
 
+    restore_complete_tree_if_applicable \
+        "${stage_host}" "${stage_host}/source/workflows" "${workflows_path}" \
+        include_workflows "workflows" "${snapshot_partial}"
     if [[ -d "${stage_host}/source/workflows" ]]; then
-        echo "Restoring workflows..."
-        replace_tree "${stage_host}/source/workflows" "${workflows_path}"
+        echo "Overlaying backed-up workflows and selective workflow includes..."
+        overlay_tree "${stage_host}/source/workflows" "${workflows_path}"
     fi
 
-    if [[ -d "${stage_host}/source/data/input" ]]; then
-        echo "Restoring input images..."
-        replace_tree "${stage_host}/source/data/input" "${data_path}/input"
-    fi
-
-    if [[ -d "${stage_host}/source/data/output" ]]; then
-        echo "Restoring output images..."
-        replace_tree "${stage_host}/source/data/output" "${data_path}/output"
-    fi
-
+    restore_complete_tree_if_applicable \
+        "${stage_host}" "${stage_host}/source/models" "${models_path}" \
+        include_models "writable model library" "${snapshot_partial}"
     if [[ -d "${stage_host}/source/models" ]]; then
-        echo "Restoring writable model library..."
-        replace_tree "${stage_host}/source/models" "${models_path}"
+        echo "Overlaying backed-up writable models without deleting unbacked models..."
+        overlay_tree "${stage_host}/source/models" "${models_path}"
     fi
 
     if [[ -d "${stage_host}/source/extra-models" ]]; then
@@ -250,8 +355,11 @@ restore_live_snapshot() {
             echo "ERROR: Snapshot contains extra models but restored COMFYUI_EXTRA_MODELS_PATH is not configured." >&2
             exit 1
         fi
-        echo "Restoring extra/legacy model library..."
-        replace_tree "${stage_host}/source/extra-models" "${extra_models_path}"
+        restore_complete_tree_if_applicable \
+            "${stage_host}" "${stage_host}/source/extra-models" "${extra_models_path}" \
+            include_extra_models "extra/legacy model library" "${snapshot_partial}"
+        echo "Overlaying backed-up extra/legacy models without deleting unbacked models..."
+        overlay_tree "${stage_host}/source/extra-models" "${extra_models_path}"
     fi
 
     if [[ -n "${extra_models_path}" ]]; then
@@ -264,7 +372,12 @@ restore_live_snapshot() {
     fi
 
     if [[ -d "${stage_host}/source/python" ]]; then
-        restore_python_volume "${stage_host}/source/python"
+        if blueprint_true "${stage_host}" include_python false && \
+            [[ "${snapshot_partial}" == false ]]; then
+            restore_python_volume "${stage_host}/source/python" replace
+        else
+            restore_python_volume "${stage_host}/source/python" overlay
+        fi
     else
         echo "Python volume was not included in this snapshot; leaving the current Python environment in place."
     fi
