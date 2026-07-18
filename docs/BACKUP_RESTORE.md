@@ -18,14 +18,14 @@ host-visible backup directory. The default is:
 ```text
 ./backups/
 ├── restic/           # encrypted restic repository
-├── restore/          # staged restores
+├── restore/          # optional staged snapshot copies
 ├── state/            # scheduler state and recovery manifest
 └── restic-password   # generated repository password
 ```
 
 The entire `./backups/` tree is ignored by Git.
 
-### Enable backups
+## Enable backups
 
 For a fresh installation, the backup sidecar is already present in the normal
 Compose stack but remains idle. Enable it in `.env`:
@@ -60,11 +60,10 @@ configured `PUID`/`PGID`. The backup service then:
 4. creates backups automatically on the configured interval,
 5. applies retention after each successful backup.
 
-The first generated password is shown in the backup logs. Copy the password file
-to a separate safe location. Losing both the backup directory and its password
-means the repository cannot be recovered.
+Copy the generated password file to a separate safe location. Losing both the
+backup directory and its password means the repository cannot be recovered.
 
-### Easy backup configuration
+## Easy backup configuration
 
 The defaults are intended to be understandable without knowing restic.
 
@@ -83,7 +82,7 @@ COMFYUI_BACKUP_INTERVAL_HOURS=24
 COMFYUI_BACKUP_RETRY_MINUTES=60
 ```
 
-### What is included
+## What is included
 
 Essential recovery state is included by default:
 
@@ -94,7 +93,7 @@ COMFYUI_BACKUP_INCLUDE_USER=true
 COMFYUI_BACKUP_INCLUDE_WORKFLOWS=true
 ```
 
-Potentially large or easily reproduced data is excluded by default:
+Potentially large or separately managed data is excluded by default:
 
 ```dotenv
 COMFYUI_BACKUP_INCLUDE_INPUT=false
@@ -115,10 +114,25 @@ ComfyUI and Manager state. Workflows are backed up from
 Inputs and outputs default to off because image collections can be large and
 ComfyUI-generated images may embed workflow metadata. Models default to off
 because they frequently dominate backup size. The Python volume defaults to off
-because rebuilding dependencies cleanly is often safer than restoring an old
-virtual environment.
+because it can be large and is often reusable across normal rollbacks.
 
-### Sensitive workflows and images
+A restore can only restore categories present in that snapshot. Categories that
+were excluded are left untouched in the live deployment. For example, the
+normal default restore rolls back configuration, custom nodes, user/Manager
+state, and workflows while leaving the current model and image libraries in
+place.
+
+For the closest possible dependency rollback, enable:
+
+```dotenv
+COMFYUI_BACKUP_INCLUDE_PYTHON=true
+```
+
+Without that option, a live restore leaves the current persistent Python volume
+in place. This is usually convenient, but it is not a bit-for-bit rollback of
+custom-node Python package versions.
+
+## Sensitive workflows and images
 
 Treat the encrypted backup as sensitive.
 
@@ -130,7 +144,7 @@ credential-bearing downloader workflows are examples of why this matters.
 The backup repository is encrypted, but anyone with both the repository and its
 password can recover this data.
 
-### Retention defaults
+## Retention defaults
 
 The novice defaults keep several recent recovery points plus longer history:
 
@@ -146,7 +160,8 @@ After each successful backup, restic applies these rules and prunes unneeded
 repository data. Unchanged content is deduplicated between snapshots.
 
 These values are intentionally conservative for the default small backup set.
-Including large model or image trees can make pruning take substantially longer.
+Including large model, image, or Python trees increases the initial repository
+size, although unchanged content is deduplicated in later snapshots.
 
 ## Everyday backup commands
 
@@ -157,120 +172,136 @@ bash scripts/backup.sh status
 bash scripts/backup.sh now
 bash scripts/backup.sh list
 bash scripts/backup.sh inspect SNAPSHOT
+bash scripts/backup.sh stage SNAPSHOT
 bash scripts/backup.sh restore SNAPSHOT
 bash scripts/backup.sh check
 bash scripts/backup.sh maintenance
 bash scripts/backup.sh logs
 ```
 
-`list` shows the available encrypted restic snapshots and their IDs. This is the
-normal starting point when deciding what can be restored.
+### `status`
+
+Shows the backup services and recent backup logs. It does not stop ComfyUI.
+
+### `now`
+
+Creates a consistent manual snapshot:
+
+```text
+stop ComfyUI if running
+        ↓
+run backup
+        ↓
+restart ComfyUI if it was running before
+```
+
+The automatic schedule is not changed.
+
+### `list`
+
+Lists available encrypted restic snapshots and their IDs:
 
 ```bash
 bash scripts/backup.sh list
 ```
 
-Before restoring, inspect a selected snapshot:
+This is the normal starting point when choosing a recovery point.
+
+### `inspect`
+
+Lists files inside a snapshot without restoring anything:
 
 ```bash
 bash scripts/backup.sh inspect a1b2c3d4
 ```
 
-To narrow inspection to one path inside the snapshot, pass that path too:
+To narrow inspection to one path:
 
 ```bash
 bash scripts/backup.sh inspect a1b2c3d4 /source/workflows
 ```
 
-Run an immediate backup without changing the automatic schedule:
+### `stage`
+
+`stage` is optional. It extracts a snapshot under `./backups/restore/` for manual
+inspection without changing the live deployment:
 
 ```bash
-bash scripts/backup.sh now
+bash scripts/backup.sh stage a1b2c3d4
 ```
 
-Verify the repository structure:
+Use this when you want to browse or manually recover individual files. Most users
+who simply want to roll back ComfierUI do not need to stage first.
 
-```bash
-bash scripts/backup.sh check
-```
+### `restore`
 
-The helper uses the running backup container. Automatic backups themselves do not
-depend on this script; the container continues scheduling backups on its own.
-
-## Safe staged restore
-
-The built-in restore command never writes directly into the live ComfyUI data.
-It restores to a new staging directory under `/backups/restore`.
-
-The normal recovery flow is:
-
-```text
-list → inspect → restore to staging → inspect staged files → deliberately recover
-```
-
-List the available snapshots:
-
-```bash
-bash scripts/backup.sh list
-```
-
-Inspect the one you are considering:
-
-```bash
-bash scripts/backup.sh inspect a1b2c3d4
-```
-
-Restore that snapshot:
+`restore` means an actual functional rollback of the live deployment:
 
 ```bash
 bash scripts/backup.sh restore a1b2c3d4
 ```
 
-Or restore the newest snapshot tagged for this ComfierUI deployment:
+Or restore the newest snapshot:
 
 ```bash
 bash scripts/backup.sh restore latest
 ```
 
-The command prints the container path, for example:
+The helper performs the recovery workflow automatically:
 
-```text
-/backups/restore/20260718T120000Z
-```
+1. extracts the selected snapshot to a private staging directory,
+2. stops ComfyUI,
+3. creates a pre-restore safety snapshot of the current state,
+4. stops the automatic backup scheduler,
+5. restores deployment configuration included in the snapshot,
+6. restores each backed-up live data category,
+7. rebuilds the ComfyUI image when deployment configuration was restored,
+8. restores the Python volume when it was included in the snapshot,
+9. recreates and starts ComfyUI,
+10. restarts the backup service.
 
-With the default backup path, the same files are visible on the host at:
+If a category was not included in the selected snapshot, `restore` leaves the
+current live category untouched rather than deleting it.
 
-```text
-./backups/restore/20260718T120000Z
-```
+The pre-restore safety snapshot gives you a recovery point for the state that
+existed immediately before rollback.
 
-The restore command refuses to use a non-empty staging directory. Inspect the
-restored files before deliberately copying anything into the live deployment.
+If the restore fails before live files are changed, the helper restarts the
+previous services. If it fails after live files begin changing, services are
+left stopped instead of starting a potentially partial restore. The safety
+snapshot remains available for recovery.
 
-A normal recovery order is:
+## Does restore rebuild?
 
-1. inspect the staged recovery manifest,
-2. restore `.env` and local Compose configuration,
-3. restore custom nodes and user/Manager state,
-4. restore workflows,
-5. restore optional inputs, outputs, or models only when they were backed up,
-6. rebuild/recreate ComfierUI,
-7. run permission checks,
-8. run a representative workflow.
+With the normal defaults, yes. Configuration is included by default, so the live
+restore rebuilds the ComfyUI image from the restored Dockerfile and deployment
+configuration, then recreates the container.
 
-## Consistency limits of the simple automatic backup
+A snapshot that does not contain deployment configuration can be restored
+without rebuilding. The helper detects this automatically.
 
-The built-in sidecar performs a live backup. It intentionally has no Docker
-socket and cannot stop or restart ComfyUI.
+Restoring workflows, user state, images, or models by themselves does not require
+an image rebuild. Restoring `.env`, Dockerfile, Docker support files, or active
+Compose configuration does.
+
+## Automatic backup consistency
+
+The scheduled backup sidecar performs a live backup. It intentionally has no
+Docker socket and cannot stop or restart ComfyUI.
 
 For the default source set this is a useful low-hassle recovery mechanism, but a
 backup taken while Manager is actively changing custom-node repositories or user
 state can capture files at slightly different moments. Avoid installing or
-updating custom nodes during a known backup run. An immediate manual backup after
-a successful major configuration change is also reasonable.
+updating custom nodes during a known automatic backup run.
 
-Users who require a strict stop-backup-start consistency boundary should use the
-advanced external workflow below.
+For an especially important known-good recovery point, use:
+
+```bash
+bash scripts/backup.sh now
+```
+
+The manual command stops ComfyUI during the snapshot and starts it again when the
+backup finishes.
 
 ## Extra/legacy model library backup
 
@@ -302,7 +333,7 @@ Power users should consider one or more of:
 - host-managed restic with a strict ComfyUI stop/start boundary,
 - systemd or an existing central backup framework.
 
-The repository still includes the earlier host-oriented examples:
+The repository includes host-oriented examples:
 
 ```text
 config/restic.env.example
@@ -333,8 +364,8 @@ A backup is not proven until a restore succeeds. Periodically verify:
 
 - the backup service is running and producing snapshots,
 - `bash scripts/backup.sh check` succeeds,
-- a staged restore contains a known workflow and user-state file,
-- a representative restored configuration can reconstruct the deployment,
+- `bash scripts/backup.sh stage SNAPSHOT` contains a known workflow and user-state file,
+- a real `bash scripts/backup.sh restore SNAPSHOT` can reconstruct a known working deployment,
 - any separately managed models or outputs are recoverable from their own backup.
 
 The built-in backup is a convenience recovery layer. Important installations
