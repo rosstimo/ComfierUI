@@ -6,8 +6,35 @@
 # this cp wrapper to backup.sh only; other host-side scripts keep normal cp
 # behavior. GNU cp accepts --no-preserve after operands, so this also works with
 # the existing archive-style copy calls in the restore implementation.
+#
+# A restic snapshot may contain tracked Docker/Compose project files for staging
+# and disaster-recovery inspection, but live restore must not overwrite the
+# currently checked-out Git tree with older copies. Git is authoritative for
+# tracked project files. When backup.sh overlays /source/repo, restore only the
+# deployment-local .env; the recorded repository commit remains the roadmap for
+# recovering tracked source on a fresh clone.
 if [[ "${BASH_SOURCE[1]:-}" == */backup.sh ]]; then
     cp() {
+        local source_operand=""
+        local destination_operand=""
+
+        if (( $# >= 2 )); then
+            source_operand="${@: -2:1}"
+            destination_operand="${@: -1}"
+        fi
+
+        if [[ "${source_operand}" == */source/repo/. ]] && \
+           [[ "${destination_operand%/}" == "${repo_root%/}" ]]; then
+            local staged_repo="${source_operand%/.}"
+            if [[ -f "${staged_repo}/.env" ]]; then
+                command cp \
+                    "${staged_repo}/.env" \
+                    "${repo_root}/.env" \
+                    --no-preserve=ownership,timestamps,mode,xattr,context
+            fi
+            return 0
+        fi
+
         command cp "$@" --no-preserve=ownership,timestamps,mode,xattr,context
     }
 fi
