@@ -14,6 +14,8 @@ services:
       TZ: "${TZ:-Etc/UTC}"
       RESTIC_REPOSITORY: /backups/restic
       RESTIC_PASSWORD_FILE: /backups/restic-password
+      RESTIC_CACHE_DIR: /backups/cache
+      HOME: /backups/home
       COMFYUI_BACKUP_TAG: "${COMFYUI_BACKUP_TAG:-comfierui}"
       COMFYUI_BACKUP_INTERVAL_HOURS: "${COMFYUI_BACKUP_INTERVAL_HOURS:-24}"
       COMFYUI_BACKUP_START_DELAY_MINUTES: "${COMFYUI_BACKUP_START_DELAY_MINUTES:-10}"
@@ -54,12 +56,6 @@ services:
       - type: bind
         source: "${COMFYUI_MODELS_PATH:-./data/models}"
         target: /source/models
-        read_only: true
-        bind:
-          create_host_path: false
-      - type: bind
-        source: "${COMFYUI_EXTRA_MODELS_PATH:-${COMFYUI_MODELS_PATH:-./data/models}}"
-        target: /source/extra-models
         read_only: true
         bind:
           create_host_path: false
