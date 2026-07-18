@@ -2,15 +2,9 @@
 set -eu
 
 output_dir="${1:-/backups/state/recovery-blueprint}"
+runtime_state=/source/data/user/.comfierui/runtime-state.json
 rm -rf "${output_dir}"
 mkdir -p "${output_dir}"
-
-read_env() {
-    key="$1"
-    file="${2:-/source/repo/.env}"
-    [ -r "${file}" ] || return 0
-    sed -n "s/^${key}=//p" "${file}" | tail -n1 | tr -d '\r'
-}
 
 resolve_git_commit() {
     worktree="$1"
@@ -55,24 +49,56 @@ inventory_files() {
     done > "${destination}"
 }
 
+json_string() {
+    expression="$1"
+    fallback="${2:-unknown}"
+    if [ -r "${runtime_state}" ]; then
+        jq -r --arg fallback "${fallback}" "${expression} // \$fallback" "${runtime_state}"
+    else
+        printf '%s\n' "${fallback}"
+    fi
+}
+
+json_bool() {
+    expression="$1"
+    if [ -r "${runtime_state}" ]; then
+        jq -r "if (${expression}) == null then \"unknown\" else (${expression} | tostring) end" "${runtime_state}"
+    else
+        printf '%s\n' unknown
+    fi
+}
+
 repo_commit="$(resolve_git_commit /source/repo || true)"
+container_state_present=false
+if [ -r "${runtime_state}" ]; then
+    cp "${runtime_state}" "${output_dir}/container-state.json"
+    container_state_present=true
+else
+    printf '{}\n' > "${output_dir}/container-state.json"
+fi
 
 cat > "${output_dir}/state.env" <<EOF
-blueprint_schema=1
+blueprint_schema=2
 created_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 repository_commit=${repo_commit:-unknown}
 compose_files=${COMFYUI_BACKUP_COMPOSE_FILES:-compose.yaml}
-COMFYUI_REF=$(read_env COMFYUI_REF)
-PYTORCH_VERSION=$(read_env PYTORCH_VERSION)
-TORCHVISION_VERSION=$(read_env TORCHVISION_VERSION)
-TORCHAUDIO_VERSION=$(read_env TORCHAUDIO_VERSION)
-TORCH_INDEX_URL=$(read_env TORCH_INDEX_URL)
-COMFYUI_IMAGE_REPOSITORY=$(read_env COMFYUI_IMAGE_REPOSITORY)
-COMFYUI_IMAGE_TAG=$(read_env COMFYUI_IMAGE_TAG)
-COMFYUI_MANAGER_ENABLED=$(read_env COMFYUI_MANAGER_ENABLED)
-COMFYUI_MANAGER_LEGACY_UI=$(read_env COMFYUI_MANAGER_LEGACY_UI)
-COMFYUI_MANAGER_SECURITY_LEVEL=$(read_env COMFYUI_MANAGER_SECURITY_LEVEL)
-COMFYUI_MANAGER_NETWORK_MODE=$(read_env COMFYUI_MANAGER_NETWORK_MODE)
+container_state_present=${container_state_present}
+COMFYUI_COMMIT=$(json_string '.comfyui.commit')
+COMFYUI_GIT_DESCRIBE=$(json_string '.comfyui.git_describe')
+COMFYUI_REF=$(json_string '.comfyui.configured_ref_at_build')
+COMFYUI_BUILD_ID=$(json_string '.image_build.build_id')
+BASE_IMAGE=$(json_string '.image_build.base_image')
+PYTHON_VERSION=$(json_string '.runtime.python')
+PYTORCH_VERSION=$(json_string '.runtime.torch')
+TORCHVISION_VERSION=$(json_string '.runtime.torchvision')
+TORCHAUDIO_VERSION=$(json_string '.runtime.torchaudio')
+TORCH_CUDA_BUILD=$(json_string '.runtime.torch_cuda_build' '')
+TORCH_INDEX_URL=$(json_string '.image_build.torch_index_url')
+COMFYUI_ACCELERATOR=$(json_string '.runtime.accelerator')
+COMFYUI_MANAGER_ENABLED=$(json_bool '.manager.enabled')
+COMFYUI_MANAGER_LEGACY_UI=$(json_bool '.manager.legacy_ui')
+COMFYUI_MANAGER_SECURITY_LEVEL=$(json_string '.manager.security_level')
+COMFYUI_MANAGER_NETWORK_MODE=$(json_string '.manager.network_mode')
 include_config=${COMFYUI_BACKUP_INCLUDE_CONFIG:-true}
 include_custom_nodes=${COMFYUI_BACKUP_INCLUDE_CUSTOM_NODES:-true}
 include_user=${COMFYUI_BACKUP_INCLUDE_USER:-true}
@@ -91,7 +117,8 @@ ComfierUI recovery blueprint
 This directory describes the known state at backup time, including reproducible
 or large items that may not be stored in the backup payload itself.
 
-state.env             Portable version/configuration pins and backup coverage.
+state.env             Compact recovery summary and backup coverage.
+container-state.json  Authoritative build/runtime state reported by ComfyUI.
 backup-includes.txt   Effective custom additional-source policy for this snapshot.
 backup-excludes.txt   Effective restic exclusion policy for this snapshot.
 custom-nodes.tsv      Custom-node directory names and Git commits when detectable.
@@ -101,14 +128,17 @@ extra-models.tsv      Extra/legacy model-library inventory when mounted for inve
 input-files.tsv       Input file inventory, even when input files are excluded.
 output-files.tsv      Output file inventory, even when output files are excluded.
 
+The container state is written by the ComfyUI container itself from its baked
+build metadata and actual installed runtime packages. The blueprint does not use
+.env as the authority for effective ComfyUI or PyTorch versions.
+
 Inventories are a recovery roadmap, not proof that excluded files are recoverable.
 Model files are not hashed by default because hashing very large libraries would
 turn a lightweight backup into an expensive full-disk read.
 
 Host-specific settings such as GPU UUIDs, UID/GID values, bind addresses, and
-absolute paths are intentionally not treated as portable recovery pins. A fresh
-host should detect or configure those values locally while reusing the portable
-version pins and backed-up application state.
+absolute paths are not portable recovery pins. A fresh host should detect or
+configure those values locally while reusing the recorded application state.
 EOF
 
 include_policy="${COMFYUI_BACKUP_INCLUDE_FILE:-/config/backup-includes.txt}"
