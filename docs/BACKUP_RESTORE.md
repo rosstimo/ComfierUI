@@ -1,43 +1,280 @@
 # Backup and restore
 
-## Recovery model
+ComfierUI includes a simple built-in backup service for normal users and keeps
+external/host-managed backup workflows as an advanced option.
 
-Classify state before deciding backup size:
+## Built-in automatic backups
 
-- **Deployment configuration:** `.env`, active Compose overrides, Dockerfile,
-  entrypoint, and optional extra-model configuration.
-- **Irreplaceable state:** workflows, user settings, Manager state, prompts,
-  private scripts, and selected input/output assets.
-- **Installed extensions:** custom-node repositories and optionally the Python
-  named volume.
-- **Large reproducible state:** downloaded models and caches.
+The normal backup path is fully Docker Compose managed:
 
-Caches and temp files are excluded. Models are opt-in because they often dominate
-repository size, but private, modified, deleted, or difficult-to-source models
-are critical data and should be enabled.
+- no host restic installation,
+- no host cron job,
+- no systemd timer,
+- no Docker socket mounted into the backup container.
 
-ComfyUI workflows and generated images can contain sensitive metadata. Workflow
-JSON may retain credentials entered into downloader or API nodes, and images can
-embed workflow data, prompts, filenames, URLs, or the same credentials. Restic
-encrypts repository contents, but the repository credentials and restored files
-must still be treated as sensitive.
+The backup service uses restic and writes an encrypted repository to the
+host-visible backup directory. The default is:
 
-## Restic setup
-
-Keep the restic password file outside this repository and outside the only backup
-it unlocks. Store a recovery copy through a separate secure channel.
-
-```bash
-cp config/restic.env.example config/restic.env
-cp config/restic-excludes.txt.example config/restic-excludes.txt
-chmod 600 config/restic.env
-$EDITOR config/restic.env
-restic init                 # only for a new repository
-restic snapshots --tag comfierui
+```text
+./backups/
+├── restic/           # encrypted restic repository
+├── restore/          # staged restores
+├── state/            # scheduler state and recovery manifest
+└── restic-password   # generated repository password
 ```
 
-For a pre-existing restic framework, leave the local example untouched and point
-the script at the established configuration:
+The entire `./backups/` tree is ignored by Git.
+
+### Enable backups
+
+For a fresh installation, the backup sidecar is already present in the normal
+Compose stack but remains idle. Enable it in `.env`:
+
+```dotenv
+COMFYUI_BACKUP_ENABLED=true
+```
+
+Then recreate the services:
+
+```bash
+docker compose up -d --force-recreate
+```
+
+For an existing installation created before the backup sidecar was added, append
+`compose.backup.yaml` to `COMPOSE_FILE` once:
+
+```dotenv
+COMPOSE_FILE=compose.yaml:compose.nvidia.yaml:compose.extra-models.yaml:compose.backup.yaml
+COMFYUI_BACKUP_ENABLED=true
+```
+
+Keep only the Compose layers your deployment actually uses. `scripts/init.sh`
+preserves optional layers already present in `COMPOSE_FILE`.
+
+On startup, a small one-shot helper creates the backup directory with the
+configured `PUID`/`PGID`. The backup service then:
+
+1. generates `restic-password` if one does not exist,
+2. initializes the encrypted restic repository if needed,
+3. waits for the configured initial delay,
+4. creates backups automatically on the configured interval,
+5. applies retention after each successful backup.
+
+The first generated password is shown in the backup logs. Copy the password file
+to a separate safe location. Losing both the backup directory and its password
+means the repository cannot be recovered.
+
+### Easy backup configuration
+
+The defaults are intended to be understandable without knowing restic.
+
+```dotenv
+# Turn automatic backups on or off.
+COMFYUI_BACKUP_ENABLED=true
+
+# Local host-visible backup directory.
+COMFYUI_BACKUP_PATH=./backups
+
+# Schedule: first backup after 10 minutes, then every 24 hours.
+COMFYUI_BACKUP_START_DELAY_MINUTES=10
+COMFYUI_BACKUP_INTERVAL_HOURS=24
+
+# Retry a failed backup after one hour.
+COMFYUI_BACKUP_RETRY_MINUTES=60
+```
+
+### What is included
+
+Essential recovery state is included by default:
+
+```dotenv
+COMFYUI_BACKUP_INCLUDE_CONFIG=true
+COMFYUI_BACKUP_INCLUDE_CUSTOM_NODES=true
+COMFYUI_BACKUP_INCLUDE_USER=true
+COMFYUI_BACKUP_INCLUDE_WORKFLOWS=true
+```
+
+Potentially large or easily reproduced data is excluded by default:
+
+```dotenv
+COMFYUI_BACKUP_INCLUDE_INPUT=false
+COMFYUI_BACKUP_INCLUDE_OUTPUT=false
+COMFYUI_BACKUP_INCLUDE_MODELS=false
+COMFYUI_BACKUP_INCLUDE_EXTRA_MODELS=false
+COMFYUI_BACKUP_INCLUDE_PYTHON=false
+```
+
+Set an `INCLUDE_*` option to `true` to include that category, or `false` to
+exclude it.
+
+The default configuration backup includes `.env`, the Dockerfile, Docker support
+files, and the active repository-local Compose layers. User state includes
+ComfyUI and Manager state. Workflows are backed up from
+`COMFYUI_WORKFLOWS_PATH`, including an external workflow directory.
+
+Inputs and outputs default to off because image collections can be large and
+ComfyUI-generated images may embed workflow metadata. Models default to off
+because they frequently dominate backup size. The Python volume defaults to off
+because rebuilding dependencies cleanly is often safer than restoring an old
+virtual environment.
+
+### Sensitive workflows and images
+
+Treat the encrypted backup as sensitive.
+
+Workflow JSON can retain API keys, access tokens, URLs, or credentials entered
+into downloader and API nodes. Generated images can embed workflow metadata and
+therefore repeat the same sensitive values. Civitai, Hugging Face, and similar
+credential-bearing downloader workflows are examples of why this matters.
+
+The backup repository is encrypted, but anyone with both the repository and its
+password can recover this data.
+
+### Retention defaults
+
+The novice defaults keep several recent recovery points plus longer history:
+
+```dotenv
+COMFYUI_BACKUP_KEEP_LAST=3
+COMFYUI_BACKUP_KEEP_DAILY=7
+COMFYUI_BACKUP_KEEP_WEEKLY=4
+COMFYUI_BACKUP_KEEP_MONTHLY=12
+COMFYUI_BACKUP_KEEP_YEARLY=3
+```
+
+After each successful backup, restic applies these rules and prunes unneeded
+repository data. Unchanged content is deduplicated between snapshots.
+
+These values are intentionally conservative for the default small backup set.
+Including large model or image trees can make pruning take substantially longer.
+
+### Status and manual backup
+
+Check the service:
+
+```bash
+docker compose ps backup backup-init
+docker compose logs --tail=100 backup
+```
+
+Run an immediate backup without changing the automatic schedule:
+
+```bash
+docker compose exec backup \
+  /bin/sh /usr/local/bin/comfierui-backup backup-now
+```
+
+List snapshots:
+
+```bash
+docker compose exec backup \
+  /bin/sh /usr/local/bin/comfierui-backup snapshots
+```
+
+Verify the repository structure:
+
+```bash
+docker compose exec backup \
+  /bin/sh /usr/local/bin/comfierui-backup check
+```
+
+## Safe staged restore
+
+The built-in restore command never writes directly into the live ComfyUI data.
+It restores to a new staging directory under `/backups/restore`.
+
+Restore the latest ComfierUI snapshot:
+
+```bash
+docker compose exec backup \
+  /bin/sh /usr/local/bin/comfierui-backup restore latest
+```
+
+The command prints the container path, for example:
+
+```text
+/backups/restore/20260718T120000Z
+```
+
+With the default backup path, the same files are visible on the host at:
+
+```text
+./backups/restore/20260718T120000Z
+```
+
+The restore command refuses to use a non-empty staging directory. Inspect the
+restored files before deliberately copying anything into the live deployment.
+
+A normal recovery order is:
+
+1. inspect the staged recovery manifest,
+2. restore `.env` and local Compose configuration,
+3. restore custom nodes and user/Manager state,
+4. restore workflows,
+5. restore optional inputs, outputs, or models only when they were backed up,
+6. rebuild/recreate ComfierUI,
+7. run permission checks,
+8. run a representative workflow.
+
+## Consistency limits of the simple automatic backup
+
+The built-in sidecar performs a live backup. It intentionally has no Docker
+socket and cannot stop or restart ComfyUI.
+
+For the default source set this is a useful low-hassle recovery mechanism, but a
+backup taken while Manager is actively changing custom-node repositories or user
+state can capture files at slightly different moments. Avoid installing or
+updating custom nodes during a known backup run. An immediate manual backup after
+a successful major configuration change is also reasonable.
+
+Users who require a strict stop-backup-start consistency boundary should use the
+advanced external workflow below.
+
+## Extra/legacy model library backup
+
+The read-only `COMFYUI_EXTRA_MODELS_PATH` library is intentionally excluded from
+the normal built-in backup. It is commonly very large and may already be managed
+independently.
+
+To opt in, add the extra-model backup mount layer and enable the category:
+
+```dotenv
+COMPOSE_FILE=compose.yaml:compose.nvidia.yaml:compose.extra-models.yaml:compose.backup.yaml:compose.backup-extra-models.yaml
+COMFYUI_BACKUP_INCLUDE_EXTRA_MODELS=true
+```
+
+Use only the accelerator and optional layers appropriate for your deployment.
+
+## Advanced: external and host-managed backups
+
+The built-in backup is designed for low-friction local recovery. A repository on
+the same disk does not protect against disk failure, theft, fire, or loss of the
+whole machine.
+
+Power users should consider one or more of:
+
+- a backup directory on another physical disk,
+- a NAS or another system,
+- an offsite restic backend,
+- SFTP, REST server, S3-compatible storage, B2, or another supported backend,
+- host-managed restic with a strict ComfyUI stop/start boundary,
+- systemd or an existing central backup framework.
+
+The repository still includes the earlier host-oriented examples:
+
+```text
+config/restic.env.example
+config/restic-excludes.txt.example
+scripts/restic-backup.sh
+scripts/restic-maintenance.sh
+scripts/restic-restore.sh
+systemd/*.example
+```
+
+Those are advanced integration examples, not requirements for the built-in
+backup service.
+
+For an established host restic framework, point the scripts at external config:
 
 ```bash
 RESTIC_ENV_FILE=/secure/path/comfierui-restic.env \
@@ -45,176 +282,19 @@ RESTIC_EXCLUDE_FILE=/secure/path/comfierui-excludes.txt \
   bash scripts/restic-backup.sh
 ```
 
-The backup script verifies that the configured restic repository can be opened
-before stopping ComfyUI. A wrong password, unreachable backend, or uninitialized
-repository therefore fails before service interruption.
-
-## Default source set
-
-Every snapshot also includes a generated recovery manifest with the deployment
-Git commit, active Compose layers, container/image identity, and built ComfyUI
-commit. It intentionally omits environment values and credentials.
-
-The example includes:
-
-- `.env`, Dockerfile, entrypoint, and every active file named in `COMPOSE_FILE`,
-- custom nodes,
-- user and Manager state,
-- workflows,
-- inputs.
-
-Outputs, models, the separate extra/legacy model library, and the Python volume
-are disabled independently. The configurable `RESTIC_TAG` isolates this
-deployment inside a shared restic repository. `restore latest` resolves the
-newest snapshot carrying that tag before restoring. The restic environment and
-password file are not included in their own backup source set.
-
-### Model backup choices
-
-The two model libraries are independent:
-
-```dotenv
-# Writable model tree used for new Manager downloads
-COMFYUI_BACKUP_MODELS=false
-
-# Optional read-only legacy/shared library from COMFYUI_EXTRA_MODELS_PATH
-COMFYUI_BACKUP_EXTRA_MODELS=false
-```
-
-Enable either only when that content is not adequately protected elsewhere.
-Large model libraries can make backup, prune, repository checks, and restore
-tests substantially more expensive.
-
-Setting `COMFYUI_BACKUP_EXTRA_MODELS=true` requires
-`COMFYUI_EXTRA_MODELS_PATH` to be configured in `.env`. The backup reads the
-host library directly; the read-only container mount does not prevent restic
-from backing it up.
-
-## Consistency
-
-Stopping ComfyUI gives the clearest consistency boundary while Manager may
-change node repositories or Python packages. The default script stops the
-service only when it is running and starts it again during cleanup, including
-when the backup fails after service shutdown.
-
-```bash
-bash scripts/restic-backup.sh
-```
-
-The script prints the exact source paths before starting the snapshot. Review
-that list, especially when workflows or model libraries use absolute external
-paths.
-
-After the first run:
-
-```bash
-restic snapshots --tag comfierui
-# Choose a listed snapshot ID for direct inspection.
-restic ls SNAPSHOT_ID
-```
-
-## Retention and repository checks
-
-Backup, retention, and deep verification are separate jobs:
-
-```bash
-bash scripts/restic-maintenance.sh regular
-bash scripts/restic-maintenance.sh deep
-```
-
-The regular job forgets snapshots according to policy, prunes, and reads a
-subset of repository data. The deep job reads all repository data. Schedule the
-deep read less often when the repository is large.
-
-## Systemd examples
-
-Copy the six `.example` units, replace `CHANGE_ME` and `/path/to/ComfierUI`, then:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now comfierui-backup.timer
-sudo systemctl enable --now comfierui-maintenance.timer
-sudo systemctl enable --now comfierui-deep-check.timer
-systemctl list-timers 'comfierui-*'
-```
-
-Keep the timer files under version control only as templates. Installed units are
-host policy and may use a central backup path rather than repository-local files.
-
-## Restore to staging
-
-Never test a restore by overwriting the only live copy:
-
-```bash
-bash scripts/restic-restore.sh latest /tmp/comfierui-restore
-```
-
-The target must be new or empty. The script refuses a non-empty staging directory
-so an old restore cannot silently mix with the snapshot being tested.
-
-Restic preserves source paths beneath the staging target. For example, an
-external workflow directory at `/mnt/nvme2/ComfierUI/workflows` will normally
-appear beneath a path similar to:
-
-```text
-/tmp/comfierui-restore/mnt/nvme2/ComfierUI/workflows
-```
-
-Inspect paths, ownership, workflow contents, and image metadata before copying
-anything into the live deployment.
-
-A deliberate recovery normally follows this order:
-
-1. Clone or restore the repository configuration.
-2. Restore `.env` and local overrides.
-3. Restore workflows, user state, and custom nodes.
-4. Restore selected input/output assets.
-5. Restore the writable and/or extra model libraries only when they were included.
-6. Rebuild the image.
-7. Reinstall dependencies cleanly or restore the Python volume.
-8. Run permission checks and representative workflows.
-
-## Restoring the Python volume
-
-Only restore a venv tar into an empty, stopped volume. Confirm every path first:
-
-```bash
-docker compose down
-volume="$(docker volume ls -q \
-  --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME:-comfierui}" \
-  --filter 'label=com.docker.compose.volume=comfyui-python' | head -n1)"
-
-docker run --rm \
-  -v "${volume}:/volume" \
-  -v /tmp/comfierui-restore/path/to/staging:/restore:ro \
-  alpine:3.22 sh -c \
-  'rm -rf /volume/* /volume/.[!.]* /volume/..?*; tar -C /volume -xf /restore/comfyui-python.tar'
-```
-
-A clean venv rebuild is often safer than restoring old dependency conflicts.
+External backup configuration, credentials, password files, repositories, and
+restored data should remain outside Git.
 
 ## Proof of recovery
 
-A backup is not proven until a restore test succeeds. Periodically verify:
+A backup is not proven until a restore succeeds. Periodically verify:
 
-- restic repository checks,
-- the recovery manifest,
-- one workflow and user-state file,
-- a representative input/output asset when included,
-- a representative local or extra model when either model option is enabled,
-- a staged Python-volume recovery when enabled,
-- full deployment reconstruction on another directory or host.
+- the backup service is running and producing snapshots,
+- `restic check` succeeds,
+- a staged restore contains a known workflow and user-state file,
+- a representative restored configuration can reconstruct the deployment,
+- any separately managed models or outputs are recoverable from their own backup.
 
-A practical first test is:
-
-```bash
-bash scripts/restic-backup.sh
-rm -rf /tmp/comfierui-restore-test
-bash scripts/restic-restore.sh latest /tmp/comfierui-restore-test
-find /tmp/comfierui-restore-test -name recovery-manifest.txt -print
-```
-
-Then compare representative restored files with their live sources before testing
-any destructive recovery procedure.
-
-Official restic documentation: https://restic.readthedocs.io/
+The built-in backup is a convenience recovery layer. Important installations
+should still maintain at least one independent copy on another disk, system, or
+offsite destination.
