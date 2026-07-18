@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 # Shared host-side helpers. This file is sourced by other scripts.
 
+# Restore data should inherit the destination host's ownership and filesystem
+# metadata instead of trying to recreate metadata from the staging tree. Scope
+# this cp wrapper to backup.sh only; other host-side scripts keep normal cp
+# behavior. GNU cp accepts --no-preserve after operands, so this also works with
+# the existing archive-style copy calls in the restore implementation.
+if [[ "${BASH_SOURCE[1]:-}" == */backup.sh ]]; then
+    cp() {
+        command cp "$@" --no-preserve=ownership,timestamps,mode,xattr,context
+    }
+fi
+
 bool_true() {
     case "${1,,}" in
         1|true|yes|on) return 0 ;;
