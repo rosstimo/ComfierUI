@@ -30,6 +30,9 @@ validate_compose "CPU Compose" -f compose.yaml -f compose.cpu.yaml
 COMFYUI_EXTERNAL_NETWORK=validation-network \
     validate_compose "external-network Compose" \
         -f compose.yaml -f compose.nvidia.yaml -f compose.external-network.yaml
+COMFYUI_EXTRA_MODELS_PATH=/tmp/comfierui-validation-models \
+    validate_compose "external-model-library Compose" \
+        -f compose.yaml -f compose.nvidia.yaml -f compose.extra-models.yaml
 validate_compose "extra-model-paths example" \
     -f compose.yaml -f compose.nvidia.yaml -f examples/compose.extra-model-paths.yaml
 
@@ -42,6 +45,7 @@ from pathlib import Path
 import yaml
 
 for path in (
+    Path("config/extra_model_paths.yaml"),
     Path("config/extra_model_paths.yaml.example"),
     Path(".github/workflows/validate.yml"),
 ):
