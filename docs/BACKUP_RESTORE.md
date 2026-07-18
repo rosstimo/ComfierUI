@@ -16,6 +16,12 @@ Caches and temp files are excluded. Models are opt-in because they often dominat
 repository size, but private, modified, deleted, or difficult-to-source models
 are critical data and should be enabled.
 
+ComfyUI workflows and generated images can contain sensitive metadata. Workflow
+JSON may retain credentials entered into downloader or API nodes, and images can
+embed workflow data, prompts, filenames, URLs, or the same credentials. Restic
+encrypts repository contents, but the repository credentials and restored files
+must still be treated as sensitive.
+
 ## Restic setup
 
 Keep the restic password file outside this repository and outside the only backup
@@ -39,6 +45,10 @@ RESTIC_EXCLUDE_FILE=/secure/path/comfierui-excludes.txt \
   bash scripts/restic-backup.sh
 ```
 
+The backup script verifies that the configured restic repository can be opened
+before stopping ComfyUI. A wrong password, unreachable backend, or uninitialized
+repository therefore fails before service interruption.
+
 ## Default source set
 
 Every snapshot also includes a generated recovery manifest with the deployment
@@ -53,21 +63,47 @@ The example includes:
 - workflows,
 - inputs.
 
-Outputs, models, and the Python volume are disabled independently. The
-configurable `RESTIC_TAG` isolates this deployment inside a shared restic
-repository. `restore latest` resolves the newest snapshot carrying that tag before
-restoring. The restic environment and password file are not included in their
-own backup source set.
+Outputs, models, the separate extra/legacy model library, and the Python volume
+are disabled independently. The configurable `RESTIC_TAG` isolates this
+deployment inside a shared restic repository. `restore latest` resolves the
+newest snapshot carrying that tag before restoring. The restic environment and
+password file are not included in their own backup source set.
+
+### Model backup choices
+
+The two model libraries are independent:
+
+```dotenv
+# Writable model tree used for new Manager downloads
+COMFYUI_BACKUP_MODELS=false
+
+# Optional read-only legacy/shared library from COMFYUI_EXTRA_MODELS_PATH
+COMFYUI_BACKUP_EXTRA_MODELS=false
+```
+
+Enable either only when that content is not adequately protected elsewhere.
+Large model libraries can make backup, prune, repository checks, and restore
+tests substantially more expensive.
+
+Setting `COMFYUI_BACKUP_EXTRA_MODELS=true` requires
+`COMFYUI_EXTRA_MODELS_PATH` to be configured in `.env`. The backup reads the
+host library directly; the read-only container mount does not prevent restic
+from backing it up.
 
 ## Consistency
 
 Stopping ComfyUI gives the clearest consistency boundary while Manager may
 change node repositories or Python packages. The default script stops the
-service only when it is running and starts it again during cleanup.
+service only when it is running and starts it again during cleanup, including
+when the backup fails after service shutdown.
 
 ```bash
 bash scripts/restic-backup.sh
 ```
+
+The script prints the exact source paths before starting the snapshot. Review
+that list, especially when workflows or model libraries use absolute external
+paths.
 
 After the first run:
 
@@ -113,13 +149,27 @@ Never test a restore by overwriting the only live copy:
 bash scripts/restic-restore.sh latest /tmp/comfierui-restore
 ```
 
-Inspect paths and ownership. A deliberate recovery normally follows this order:
+The target must be new or empty. The script refuses a non-empty staging directory
+so an old restore cannot silently mix with the snapshot being tested.
+
+Restic preserves source paths beneath the staging target. For example, an
+external workflow directory at `/mnt/nvme2/ComfierUI/workflows` will normally
+appear beneath a path similar to:
+
+```text
+/tmp/comfierui-restore/mnt/nvme2/ComfierUI/workflows
+```
+
+Inspect paths, ownership, workflow contents, and image metadata before copying
+anything into the live deployment.
+
+A deliberate recovery normally follows this order:
 
 1. Clone or restore the repository configuration.
 2. Restore `.env` and local overrides.
 3. Restore workflows, user state, and custom nodes.
 4. Restore selected input/output assets.
-5. Restore models only when they were included.
+5. Restore the writable and/or extra model libraries only when they were included.
 6. Rebuild the image.
 7. Reinstall dependencies cleanly or restore the Python volume.
 8. Run permission checks and representative workflows.
@@ -148,9 +198,23 @@ A clean venv rebuild is often safer than restoring old dependency conflicts.
 A backup is not proven until a restore test succeeds. Periodically verify:
 
 - restic repository checks,
+- the recovery manifest,
 - one workflow and user-state file,
-- a representative private model or output when included,
+- a representative input/output asset when included,
+- a representative local or extra model when either model option is enabled,
 - a staged Python-volume recovery when enabled,
 - full deployment reconstruction on another directory or host.
+
+A practical first test is:
+
+```bash
+bash scripts/restic-backup.sh
+rm -rf /tmp/comfierui-restore-test
+bash scripts/restic-restore.sh latest /tmp/comfierui-restore-test
+find /tmp/comfierui-restore-test -name recovery-manifest.txt -print
+```
+
+Then compare representative restored files with their live sources before testing
+any destructive recovery procedure.
 
 Official restic documentation: https://restic.readthedocs.io/
