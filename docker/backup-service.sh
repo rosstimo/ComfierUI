@@ -7,6 +7,8 @@ case "${COMFYUI_BACKUP_ENABLED:-false}" in
         ;;
     *)
         printf '%s\n' "Built-in backups are disabled. Set COMFYUI_BACKUP_ENABLED=true to enable automatic encrypted backups."
-        exec sleep infinity
+        while :; do
+            sleep 86400
+        done
         ;;
 esac
