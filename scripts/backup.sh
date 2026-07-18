@@ -15,8 +15,8 @@ Normal built-in backup commands:
   list                   List available backup snapshots
   inspect SNAPSHOT [PATH]
                          List files in a snapshot, optionally below PATH
-  restore [SNAPSHOT]     Restore a snapshot to a new staging directory
-                         (defaults to latest)
+  restore [SNAPSHOT]     Restore a snapshot to a new staging directory only;
+                         never modifies the live deployment (defaults to latest)
   check                  Verify the restic repository structure
   maintenance            Apply configured retention and prune old data
   logs                   Follow backup service logs
@@ -105,6 +105,7 @@ case "${command}" in
             echo "Usage: scripts/backup.sh restore [SNAPSHOT]" >&2
             exit 2
         fi
+        echo "Restoring to staging only. The live ComfyUI deployment will not be stopped, modified, or rebuilt."
         backup_command restore "${1:-latest}"
         ;;
     check)
