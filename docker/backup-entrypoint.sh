@@ -32,6 +32,7 @@ restore_root=/backups/restore
 password_file="${RESTIC_PASSWORD_FILE:-/backups/restic-password}"
 last_success_file="${state_dir}/last-success-epoch"
 manifest_file="${state_dir}/recovery-manifest.txt"
+blueprint_dir="${state_dir}/recovery-blueprint"
 
 ensure_backup_layout() {
     mkdir -p /backups/restic /backups/cache /backups/home "${state_dir}" "${restore_root}"
@@ -91,6 +92,9 @@ build_source_list() {
     : > "${source_list}"
     write_manifest
     add_source "${source_list}" "${manifest_file}" true
+
+    /bin/sh /usr/local/bin/comfierui-recovery-blueprint "${blueprint_dir}"
+    add_source "${source_list}" "${blueprint_dir}" true
 
     if is_true "${COMFYUI_BACKUP_INCLUDE_CONFIG:-true}"; then
         add_source "${source_list}" /source/repo/.env true
