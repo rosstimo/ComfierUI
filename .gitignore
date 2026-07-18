@@ -2,6 +2,8 @@
 .env
 config/restic.env
 config/restic-excludes.txt
+config/backup-includes.txt
+config/backup-excludes.txt
 config/extra_model_paths.yaml
 compose.local.yaml
 compose.extra-model-paths.yaml
