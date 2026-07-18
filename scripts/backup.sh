@@ -10,7 +10,8 @@ Usage: scripts/backup.sh COMMAND [ARGS]
 
 Normal built-in backup commands:
   status                 Show backup services and recent backup logs
-  now                    Run an immediate backup
+  now                    Stop ComfyUI if running, run an immediate backup,
+                         then restart ComfyUI
   list                   List available backup snapshots
   inspect SNAPSHOT [PATH]
                          List files in a snapshot, optionally below PATH
@@ -21,6 +22,7 @@ Normal built-in backup commands:
   logs                   Follow backup service logs
 
 Examples:
+  bash scripts/backup.sh now
   bash scripts/backup.sh list
   bash scripts/backup.sh inspect a1b2c3d4
   bash scripts/backup.sh restore a1b2c3d4
@@ -30,6 +32,10 @@ EOF
 
 backup_running() {
     docker compose ps --status running --services 2>/dev/null | grep -qx backup
+}
+
+comfyui_running() {
+    docker compose ps --status running --services 2>/dev/null | grep -qx comfyui
 }
 
 require_backup_running() {
@@ -45,6 +51,29 @@ backup_command() {
         /bin/sh /usr/local/bin/comfierui-backup "$@"
 }
 
+run_consistent_manual_backup() {
+    local was_running=false
+
+    if comfyui_running; then
+        was_running=true
+        echo "Stopping ComfyUI for a consistent manual backup..."
+        docker compose stop comfyui
+    fi
+
+    cleanup_manual_backup() {
+        if [[ "${was_running}" == true ]]; then
+            echo "Starting ComfyUI..."
+            docker compose up -d comfyui
+        fi
+    }
+    trap cleanup_manual_backup EXIT INT TERM HUP
+
+    backup_command backup-now
+
+    cleanup_manual_backup
+    trap - EXIT INT TERM HUP
+}
+
 command="${1:-help}"
 shift || true
 
@@ -56,7 +85,7 @@ case "${command}" in
         ;;
     now)
         require_backup_running
-        backup_command backup-now
+        run_consistent_manual_backup
         ;;
     list)
         require_backup_running
