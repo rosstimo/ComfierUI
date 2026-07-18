@@ -33,6 +33,9 @@ password_file="${RESTIC_PASSWORD_FILE:-/backups/restic-password}"
 last_success_file="${state_dir}/last-success-epoch"
 manifest_file="${state_dir}/recovery-manifest.txt"
 blueprint_dir="${state_dir}/recovery-blueprint"
+include_file="${COMFYUI_BACKUP_INCLUDE_FILE:-/config/backup-includes.txt}"
+exclude_file="${COMFYUI_BACKUP_EXCLUDE_FILE:-/config/backup-excludes.txt}"
+exclude_larger_than="${COMFYUI_BACKUP_EXCLUDE_LARGER_THAN:-}"
 
 ensure_backup_layout() {
     mkdir -p /backups/restic /backups/cache /backups/home "${state_dir}" "${restore_root}"
@@ -70,6 +73,24 @@ add_source() {
     fi
 }
 
+add_configured_sources() {
+    source_list="$1"
+    [ -r "${include_file}" ] || return 0
+
+    while IFS= read -r path || [ -n "${path}" ]; do
+        case "${path}" in
+            ''|\#*) continue ;;
+            /source/*)
+                add_source "${source_list}" "${path}" false
+                ;;
+            *)
+                log "ERROR: Custom backup include paths must stay under /source: ${path}"
+                return 1
+                ;;
+        esac
+    done < "${include_file}"
+}
+
 write_manifest() {
     cat > "${manifest_file}" <<EOF
 created_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -84,6 +105,7 @@ include_output=${COMFYUI_BACKUP_INCLUDE_OUTPUT:-false}
 include_models=${COMFYUI_BACKUP_INCLUDE_MODELS:-false}
 include_extra_models=${COMFYUI_BACKUP_INCLUDE_EXTRA_MODELS:-false}
 include_python=${COMFYUI_BACKUP_INCLUDE_PYTHON:-false}
+exclude_larger_than=${exclude_larger_than}
 EOF
 }
 
@@ -136,8 +158,10 @@ build_source_list() {
 
     is_true "${COMFYUI_BACKUP_INCLUDE_PYTHON:-false}" && add_source "${source_list}" /source/python true
 
+    add_configured_sources "${source_list}"
+
     if [ ! -s "${source_list}" ]; then
-        log "ERROR: Backup source list is empty. Enable at least one COMFYUI_BACKUP_INCLUDE_* option."
+        log "ERROR: Backup source list is empty. Enable at least one COMFYUI_BACKUP_INCLUDE_* option or add a custom include path."
         return 1
     fi
 }
@@ -177,12 +201,27 @@ run_backup() {
 
     log "Starting encrypted backup. Selected sources:"
     sed 's/^/  /' "${source_list}"
+    if [ -r "${exclude_file}" ]; then
+        log "Using backup exclude policy: ${exclude_file}"
+    fi
+    if [ -n "${exclude_larger_than}" ]; then
+        log "Excluding files larger than: ${exclude_larger_than}"
+    fi
     log "WARNING: Workflows can contain API keys/tokens. Images can embed workflow metadata. Protect the backup repository and password."
 
-    restic backup \
+    set -- backup \
         --files-from-verbatim "${source_list}" \
         --tag "${backup_tag}" \
         --host comfierui
+
+    if [ -r "${exclude_file}" ]; then
+        set -- "$@" --exclude-file "${exclude_file}"
+    fi
+    if [ -n "${exclude_larger_than}" ]; then
+        set -- "$@" --exclude-larger-than "${exclude_larger_than}"
+    fi
+
+    restic "$@"
 
     apply_retention
     date +%s > "${last_success_file}"
