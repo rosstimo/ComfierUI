@@ -1,0 +1,9 @@
+services:
+  backup:
+    volumes:
+      - type: bind
+        source: "${COMFYUI_EXTRA_MODELS_PATH}"
+        target: /source/extra-models
+        read_only: true
+        bind:
+          create_host_path: false
