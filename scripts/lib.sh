@@ -1,6 +1,43 @@
 #!/usr/bin/env bash
 # Shared host-side helpers. This file is sourced by other scripts.
 
+# Restore data should inherit the destination host's ownership and timestamps
+# instead of trying to recreate host-local metadata from the staging tree.
+# Preserve normal file modes so executable scripts remain executable. Scope this
+# cp wrapper to backup.sh only; other host-side scripts keep normal cp behavior.
+#
+# A restic snapshot may contain tracked Docker/Compose project files for staging
+# and disaster-recovery inspection, but live restore must not overwrite the
+# currently checked-out Git tree with older copies. Git is authoritative for
+# tracked project files. When backup.sh overlays /source/repo, restore only the
+# deployment-local .env; the recorded repository commit remains the roadmap for
+# recovering tracked source on a fresh clone.
+if [[ "${BASH_SOURCE[1]:-}" == */backup.sh ]]; then
+    cp() {
+        local source_operand=""
+        local destination_operand=""
+
+        if (( $# >= 2 )); then
+            source_operand="${@: -2:1}"
+            destination_operand="${@: -1}"
+        fi
+
+        if [[ "${source_operand}" == */source/repo/. ]] && \
+           [[ "${destination_operand%/}" == "${repo_root%/}" ]]; then
+            local staged_repo="${source_operand%/.}"
+            if [[ -f "${staged_repo}/.env" ]]; then
+                command cp \
+                    "${staged_repo}/.env" \
+                    "${repo_root}/.env" \
+                    --no-preserve=ownership,timestamps,xattr,context
+            fi
+            return 0
+        fi
+
+        command cp "$@" --no-preserve=ownership,timestamps,xattr,context
+    }
+fi
+
 bool_true() {
     case "${1,,}" in
         1|true|yes|on) return 0 ;;
@@ -86,3 +123,16 @@ if not path.is_absolute():
 print(path.resolve(strict=False))
 PY
 }
+
+# A fresh-clone recovery must never silently build over the normal :latest tag.
+# If the recovery host did not explicitly choose an image tag, derive an isolated
+# one from the Compose project name before recover.sh performs any build.
+if [[ "${BASH_SOURCE[1]:-}" == */recover.sh && -f .env ]] && \
+   [[ -z "$(env_get COMFYUI_IMAGE_TAG "" .env)" ]]; then
+    recovery_project_name="$(env_get COMPOSE_PROJECT_NAME comfierui .env)"
+    recovery_project_name="$(printf '%s' "${recovery_project_name}" | sed 's/[^A-Za-z0-9_.-]/-/g')"
+    [[ -n "${recovery_project_name}" ]] || recovery_project_name=comfierui
+    recovery_image_tag="recovery-${recovery_project_name}"
+    env_set COMFYUI_IMAGE_TAG "${recovery_image_tag}" .env
+    echo "Fresh recovery image tag not set; using COMFYUI_IMAGE_TAG=${recovery_image_tag}"
+fi

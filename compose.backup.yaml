@@ -1,0 +1,132 @@
+services:
+  backup-init:
+    image: alpine:3.22
+    restart: "no"
+    user: "0:0"
+    environment:
+      PUID: "${PUID:-1000}"
+      PGID: "${PGID:-1000}"
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        mkdir -p /backups /python &&
+        chown "$${PUID}:$${PGID}" /backups /python &&
+        chmod 2770 /backups
+    volumes:
+      - type: bind
+        source: "${COMFYUI_BACKUP_PATH:-./backups}"
+        target: /backups
+      - type: volume
+        source: comfyui-python
+        target: /python
+
+  backup:
+    image: "restic/restic:${COMFYUI_BACKUP_RESTIC_VERSION:-0.19.1}"
+    init: true
+    restart: "${COMFYUI_BACKUP_RESTART_POLICY:-unless-stopped}"
+    user: "${PUID:-1000}:${PGID:-1000}"
+    group_add:
+      - "${COMFYUI_SHARED_GID:-1000}"
+    depends_on:
+      backup-init:
+        condition: service_completed_successfully
+    entrypoint:
+      - /bin/sh
+      - /usr/local/bin/comfierui-backup-service
+    environment:
+      TZ: "${TZ:-Etc/UTC}"
+      RESTIC_REPOSITORY: /backups/restic
+      RESTIC_PASSWORD_FILE: /backups/restic-password
+      RESTIC_CACHE_DIR: /backups/cache
+      HOME: /backups/home
+      COMFYUI_BACKUP_ENABLED: "${COMFYUI_BACKUP_ENABLED:-false}"
+      COMFYUI_BACKUP_TAG: "${COMFYUI_BACKUP_TAG:-comfierui}"
+      COMFYUI_BACKUP_INTERVAL_HOURS: "${COMFYUI_BACKUP_INTERVAL_HOURS:-24}"
+      COMFYUI_BACKUP_START_DELAY_MINUTES: "${COMFYUI_BACKUP_START_DELAY_MINUTES:-10}"
+      COMFYUI_BACKUP_RETRY_MINUTES: "${COMFYUI_BACKUP_RETRY_MINUTES:-60}"
+      COMFYUI_BACKUP_KEEP_LAST: "${COMFYUI_BACKUP_KEEP_LAST:-3}"
+      COMFYUI_BACKUP_KEEP_DAILY: "${COMFYUI_BACKUP_KEEP_DAILY:-7}"
+      COMFYUI_BACKUP_KEEP_WEEKLY: "${COMFYUI_BACKUP_KEEP_WEEKLY:-4}"
+      COMFYUI_BACKUP_KEEP_MONTHLY: "${COMFYUI_BACKUP_KEEP_MONTHLY:-12}"
+      COMFYUI_BACKUP_KEEP_YEARLY: "${COMFYUI_BACKUP_KEEP_YEARLY:-3}"
+      COMFYUI_BACKUP_INCLUDE_CONFIG: "${COMFYUI_BACKUP_INCLUDE_CONFIG:-true}"
+      COMFYUI_BACKUP_INCLUDE_CUSTOM_NODES: "${COMFYUI_BACKUP_INCLUDE_CUSTOM_NODES:-true}"
+      COMFYUI_BACKUP_INCLUDE_USER: "${COMFYUI_BACKUP_INCLUDE_USER:-true}"
+      COMFYUI_BACKUP_INCLUDE_WORKFLOWS: "${COMFYUI_BACKUP_INCLUDE_WORKFLOWS:-true}"
+      COMFYUI_BACKUP_INCLUDE_INPUT: "${COMFYUI_BACKUP_INCLUDE_INPUT:-false}"
+      COMFYUI_BACKUP_INCLUDE_OUTPUT: "${COMFYUI_BACKUP_INCLUDE_OUTPUT:-false}"
+      COMFYUI_BACKUP_INCLUDE_MODELS: "${COMFYUI_BACKUP_INCLUDE_MODELS:-false}"
+      COMFYUI_BACKUP_INCLUDE_EXTRA_MODELS: "${COMFYUI_BACKUP_INCLUDE_EXTRA_MODELS:-false}"
+      COMFYUI_BACKUP_INCLUDE_PYTHON: "${COMFYUI_BACKUP_INCLUDE_PYTHON:-false}"
+      COMFYUI_BACKUP_INCLUDE_FILE: /config/backup-includes.txt
+      COMFYUI_BACKUP_EXCLUDE_FILE: /config/backup-excludes.txt
+      COMFYUI_BACKUP_EXCLUDE_LARGER_THAN: "${COMFYUI_BACKUP_EXCLUDE_LARGER_THAN:-}"
+      COMFYUI_BACKUP_COMPOSE_FILES: "${COMPOSE_FILE:-compose.yaml}"
+      COMFYUI_EXTRA_MODELS_PATH_CONFIGURED: "${COMFYUI_EXTRA_MODELS_PATH:-}"
+    volumes:
+      - type: bind
+        source: .
+        target: /source/repo
+        read_only: true
+      - type: bind
+        source: "${COMFYUI_DATA_PATH:-./data}"
+        target: /source/data
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${COMFYUI_WORKFLOWS_PATH:-./data/workflows}"
+        target: /source/workflows
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${COMFYUI_MODELS_PATH:-./data/models}"
+        target: /source/models
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${COMFYUI_EXTRA_MODELS_PATH:-${COMFYUI_MODELS_PATH:-./data/models}}"
+        target: /source/extra-models
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${COMFYUI_BACKUP_PATH:-./backups}"
+        target: /backups
+      - type: bind
+        source: "${COMFYUI_BACKUP_INCLUDE_FILE:-./config/backup-includes.txt.example}"
+        target: /config/backup-includes.txt
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${COMFYUI_BACKUP_EXCLUDE_FILE:-./config/backup-excludes.txt.example}"
+        target: /config/backup-excludes.txt
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./docker/backup-service.sh
+        target: /usr/local/bin/comfierui-backup-service
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./docker/backup-entrypoint.sh
+        target: /usr/local/bin/comfierui-backup
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./docker/recovery-blueprint.sh
+        target: /usr/local/bin/comfierui-recovery-blueprint
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: volume
+        source: comfyui-python
+        target: /source/python
+        read_only: true

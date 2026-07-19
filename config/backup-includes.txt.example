@@ -1,0 +1,22 @@
+# Optional additional built-in backup sources.
+#
+# One absolute path inside the backup container per line. Blank lines and lines
+# beginning with # are ignored by ComfierUI.
+#
+# The backup container exposes these useful read-only roots:
+#   /source/repo          ComfierUI repository/configuration
+#   /source/data          ComfyUI runtime data
+#   /source/workflows     configured workflow directory
+#   /source/models        writable model library
+#   /source/extra-models  configured legacy/shared model library
+#   /source/python        persistent Python environment
+#
+# Examples:
+# /source/models/checkpoints/rare-model.safetensors
+# /source/models/loras/private-collection
+# /source/extra-models/checkpoints/unavailable
+# /source/data/input/irreplaceable-reference.png
+#
+# Broad COMFYUI_BACKUP_INCLUDE_* category switches are still applied separately.
+# This file only adds extra sources; use backup-excludes.txt to remove matching
+# content from selected directories.

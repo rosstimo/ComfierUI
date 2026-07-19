@@ -51,8 +51,19 @@ print(max(snapshots, key=timestamp)["id"])
     echo "Resolved latest snapshot tagged ${backup_tag}: ${snapshot}"
 fi
 
+if [[ -e "${target}" && ! -d "${target}" ]]; then
+    echo "ERROR: Restore target exists and is not a directory: ${target}" >&2
+    exit 1
+fi
+if [[ -d "${target}" ]] && find "${target}" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
+    echo "ERROR: Restore target is not empty: ${target}" >&2
+    echo "Use a new or empty staging directory so restored data cannot mix with older files." >&2
+    exit 1
+fi
+
 mkdir -p "${target}"
 restic restore "${snapshot}" --target "${target}"
 
 echo "Restored to staging directory: ${target}"
-echo "Inspect the files before copying them into the live deployment."
+echo "Inspect paths, ownership, workflows, and image metadata before copying anything into the live deployment."
+echo "Restored workflows and ComfyUI images may contain credentials or other private metadata."

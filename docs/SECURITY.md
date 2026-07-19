@@ -25,30 +25,28 @@ Before changing the bind address to `0.0.0.0`:
 - put authentication at a reverse proxy, VPN, or tunnel boundary,
 - keep Manager away from unauthenticated public access.
 
-## Secrets, workflows, and image metadata
+## Secrets and metadata
 
 Do not commit:
 
 - `.env`,
 - API keys or access tokens,
 - restic credentials or password files,
-- workflows unless they have been deliberately audited and sanitized,
-- input/output images or other ComfyUI image directories,
+- workflows unless you have inspected and intentionally sanitized them,
+- input/output/generated image assets unless you have inspected their metadata,
+- backup repositories or staged restore directories,
 - Manager configuration containing credentials.
 
-Workflow JSON can persist node values, including credentials entered into downloader
-or API nodes. ComfyUI-generated images can embed workflows, prompts, filenames,
-URLs, and other metadata; if a saved workflow contains a secret, an image carrying
-that workflow metadata may repeat the same secret.
+Workflow JSON can retain API keys or access tokens entered into downloader/API
+nodes, including Civitai or Hugging Face integrations. ComfyUI-generated images
+can embed workflow metadata and repeat those same values alongside prompts,
+filenames, and URLs. `scripts/audit-workflows.py` detects several obvious shapes
+but is not proof that a workflow or generated image is safe to publish.
 
-The repository `.gitignore` therefore excludes the default `data/` tree plus common
-repo-local workflow and image runtime directories such as `workflows/`, `input/`,
-`output/`, `temp/`, and `images/`. These ignores are guardrails, not sanitizers:
-`git add -f`, alternate directory names, or files committed before the ignore rule
-can still publish sensitive data.
-
-`scripts/audit-workflows.py` detects several obvious secret shapes but is not proof
-that a workflow or image is safe to publish.
+The repository `.gitignore` excludes the normal runtime workflow, image, backup,
+and restore directories. That is a guardrail, not a sanitizer: files already
+tracked, force-added, copied elsewhere, or committed under another path can still
+leak sensitive data.
 
 ## Git history
 
@@ -65,10 +63,15 @@ scripts as code.
 
 ## Backup security
 
-Restic encrypts repository contents, but the password and backend credentials
-remain critical. Keep the password file outside this repository and maintain an
-independent recovery copy. Do not place the only password copy inside the backup
-it unlocks.
+The built-in restic repository is encrypted, but the generated password remains
+critical. The default local backup directory is designed for low-friction
+recovery from bad updates, deletion, or configuration mistakes; a copy on the
+same disk does not protect against loss of that disk or machine.
+
+Keep an independent copy of the restic password if the backups matter. For
+stronger protection, use the advanced backup options to place another copy on a
+different disk, system, NAS, or offsite backend.
 
 A backup containing private models, prompts, workflows, or outputs can be as
-sensitive as the live deployment.
+sensitive as the live deployment. Staged restores are plaintext and should be
+protected and deleted when no longer needed.

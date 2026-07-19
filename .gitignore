@@ -2,6 +2,8 @@
 .env
 config/restic.env
 config/restic-excludes.txt
+config/backup-includes.txt
+config/backup-excludes.txt
 config/extra_model_paths.yaml
 compose.local.yaml
 compose.extra-model-paths.yaml
@@ -16,6 +18,14 @@ data/
 /output/
 /temp/
 /images/
+
+# Backup and restore data
+# Built-in backups, generated restic passwords, repositories, and staged restores
+# are runtime data and may contain encrypted or restored sensitive content.
+/backup/
+/backups/
+/restore/
+/restores/
 
 # Python and editor artifacts
 __pycache__/

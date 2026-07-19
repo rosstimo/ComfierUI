@@ -243,23 +243,68 @@ http://comfyui:8188
 
 See [Networking](docs/NETWORKING.md).
 
-## Backup and restore
+## Built-in automatic backup and recovery
 
-Restic examples are included for configuration, workflows, custom nodes, user
-state, and optionally models, outputs, and the Python environment.
+ComfierUI includes an opt-in Docker-managed restic backup sidecar. Normal users do
+not need restic, cron, or systemd installed on the host.
 
-```bash
-cp config/restic.env.example config/restic.env
-cp config/restic-excludes.txt.example config/restic-excludes.txt
-chmod 600 config/restic.env
-$EDITOR config/restic.env
+Enable it in `.env`:
 
-bash scripts/restic-backup.sh
-bash scripts/restic-restore.sh latest /tmp/comfierui-restore
+```dotenv
+COMFYUI_BACKUP_ENABLED=true
 ```
 
-Read [Backup and restore](docs/BACKUP_RESTORE.md) before enabling the included
-systemd timers.
+With the default configuration it automatically creates encrypted backups of the
+important small recovery state: local deployment configuration, custom nodes,
+user and Manager state, and workflows. Inputs, outputs, models, the extra/legacy
+model library, and the Python volume are excluded unless explicitly enabled.
+
+Every snapshot also records a recovery blueprint describing the actual running
+ComfyUI/container state plus reproducible or excluded state such as version pins,
+custom-node commits, Python package versions, and model inventories. The idea is
+to back up what is unique, rebuild what is reproducible, and keep a roadmap back
+to the known-good state.
+
+Users can make the backup as large as they want. Models, extra models, Python,
+inputs, and outputs can all be enabled, while optional include/exclude policy
+files allow selective protection of rare or irreplaceable assets. Models default
+off because of size, not because they are guaranteed to remain downloadable.
+
+The default schedule is one backup every 24 hours, keeping 7 daily, 4 weekly, 12
+monthly, and 3 yearly recovery points, plus the latest 3 snapshots. The local
+backup repository, generated password, and optional staged snapshot copies live
+under `./backups/`, which is ignored by Git.
+
+Workflow files can contain API keys or tokens stored in node settings, and ComfyUI
+images can embed workflow metadata. Keep workflows and image directories out of
+Git and treat backup repositories and restored data as sensitive.
+
+For an existing deployment rollback:
+
+```bash
+bash scripts/backup.sh restore SNAPSHOT
+```
+
+For a freshly initialized clone recovering from an existing built-in restic
+repository:
+
+```bash
+bash scripts/recover.sh SNAPSHOT
+```
+
+Fresh-clone recovery preserves host-local hardware, identity, path, port, network,
+and backup choices while reconstructing the recorded Git commit, exact ComfyUI
+commit, pinned core runtime, Manager state, custom nodes, user state, and workflows.
+Deliberately excluded models and packages are inventoried and reported rather than
+falsely claimed restored.
+
+`bash scripts/backup.sh stage SNAPSHOT` remains available as a non-destructive way
+to extract a snapshot for manual inspection.
+
+Read [Backup and restore](docs/BACKUP_RESTORE.md) for backup policy, retention,
+live rollback, fresh-clone recovery, and advanced external/offsite options. See
+[Recovery blueprint](docs/RECOVERY_BLUEPRINT.md) for the portable-state and
+known-state reconstruction model.
 
 ## Documentation
 
@@ -273,6 +318,7 @@ Start here when the quick commands are not enough:
 - [Migration from an existing installation](docs/MIGRATION.md)
 - [Networking](docs/NETWORKING.md)
 - [Backup and restore](docs/BACKUP_RESTORE.md)
+- [Recovery blueprint](docs/RECOVERY_BLUEPRINT.md)
 - [Security](docs/SECURITY.md)
 
 <details>
