@@ -46,6 +46,7 @@ esac
 
 compose_file="$(env_get COMPOSE_FILE "" .env)"
 extra_models_setting="$(env_get COMFYUI_EXTRA_MODELS_PATH "" .env)"
+external_network_setting="$(env_get COMFYUI_EXTERNAL_NETWORK "" .env)"
 data_path="$(resolve_host_path "$(env_get COMFYUI_DATA_PATH ./data)" "${repo_root}")"
 models_path="$(resolve_host_path "$(env_get COMFYUI_MODELS_PATH ./data/models)" "${repo_root}")"
 extra_models_path=""
@@ -80,6 +81,24 @@ elif [[ ":${compose_file}:" == *":compose.extra-models.yaml:"* ]]; then
     echo "FAIL  compose.extra-models.yaml is enabled but COMFYUI_EXTRA_MODELS_PATH is empty"
     echo "      set the path or rerun scripts/init.sh after removing the layer"
     fail=1
+fi
+
+if [[ -n "${external_network_setting}" || ":${compose_file}:" == *":compose.external-network.yaml:"* ]]; then
+    echo
+    echo "=== External Docker network ==="
+    if [[ -z "${external_network_setting}" ]]; then
+        echo "FAIL  compose.external-network.yaml is enabled but COMFYUI_EXTERNAL_NETWORK is empty"
+        fail=1
+    elif [[ ":${compose_file}:" != *":compose.external-network.yaml:"* ]]; then
+        echo "FAIL  COMFYUI_EXTERNAL_NETWORK is set but compose.external-network.yaml is not enabled"
+        fail=1
+    elif docker network inspect "${external_network_setting}" >/dev/null 2>&1; then
+        echo "PASS  external network exists: ${external_network_setting}"
+    else
+        echo "FAIL  external network does not exist: ${external_network_setting}"
+        echo "      create it first or remove the external-network configuration"
+        fail=1
+    fi
 fi
 
 echo
@@ -129,6 +148,23 @@ if [[ -n "${extra_models_path}" ]]; then
 else
     df -h "${repo_root}" "${data_path}" "${models_path}" 2>/dev/null |
         awk 'NR == 1 || !seen[$1]++'
+fi
+
+echo
+if [[ "${fail}" -eq 0 ]]; then
+    cat <<'EOF'
+=== Preflight passed ===
+Next steps:
+  docker compose build --pull comfyui
+  docker compose up -d
+  docker compose ps
+EOF
+else
+    cat <<'EOF'
+=== Preflight needs attention ===
+Fix the FAIL items above, then rerun:
+  bash scripts/preflight.sh
+EOF
 fi
 
 exit "${fail}"
