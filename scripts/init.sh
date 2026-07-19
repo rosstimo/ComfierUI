@@ -121,6 +121,7 @@ models_setting="$(config_get COMFYUI_MODELS_PATH ./data/models)"
 workflows_setting="$(config_get COMFYUI_WORKFLOWS_PATH ./data/workflows)"
 manager_legacy_ui="$(config_get COMFYUI_MANAGER_LEGACY_UI true)"
 current_compose_file="$(config_get COMPOSE_FILE compose.yaml)"
+backup_enabled="$(config_get COMFYUI_BACKUP_ENABLED false)"
 
 shared_gid_setting="${COMFYUI_SHARED_GID:-}"
 if [[ -z "${shared_gid_setting}" && -f .env ]]; then
@@ -246,6 +247,7 @@ if [[ "${new_env}" == true ]]; then
 
 # Name, address, and port
 COMPOSE_PROJECT_NAME=${project_name}
+# 127.0.0.1 = local host only. Use 0.0.0.0 only for a trusted LAN or protected host.
 COMFYUI_BIND_ADDRESS=${bind_address}
 COMFYUI_PORT=${port}
 TZ=${timezone}
@@ -253,6 +255,7 @@ TZ=${timezone}
 # Persistent host paths
 COMFYUI_DATA_PATH=${data_setting}
 COMFYUI_MODELS_PATH=${models_setting}
+# Replace this value with an absolute path to reuse an existing workflow directory.
 COMFYUI_WORKFLOWS_PATH=${workflows_setting}
 EOF
 
@@ -283,13 +286,21 @@ TORCH_INDEX_URL=${selected_torch_index}
 # Host identity and shared-file permissions
 PUID=$(id -u)
 PGID=$(id -g)
+# For an existing shared path, find its numeric group with: stat -c '%g %G' /path
 COMFYUI_SHARED_GID=${shared_gid_setting}
 
 # Optional existing model library
-# Add COMFYUI_EXTRA_MODELS_PATH above and rerun scripts/init.sh to enable it.
+# Set an absolute path below, then rerun scripts/init.sh to enable the read-only mount.
+# COMFYUI_EXTRA_MODELS_PATH=/absolute/path/to/existing/models
+
+# Optional automatic backups
+# The backup sidecar is already included but remains idle until enabled.
+# Defaults: ./backups; first run after 10 minutes; every 24 hours thereafter.
+# Retention: latest 3, daily 7, weekly 4, monthly 12, yearly 3.
+COMFYUI_BACKUP_ENABLED=${backup_enabled}
 
 # Optional existing Docker network
-# Append :compose.external-network.yaml to COMPOSE_FILE above, then add:
+# Append :compose.external-network.yaml to COMPOSE_FILE above, then set the network name.
 # COMFYUI_EXTERNAL_NETWORK=ai-services
 EOF
     echo "Created minimal .env"
@@ -307,6 +318,9 @@ else
     env_set TORCH_INDEX_URL "${selected_torch_index}"
     if [[ -z "$(env_get COMFYUI_MANAGER_LEGACY_UI "" .env)" ]]; then
         env_set COMFYUI_MANAGER_LEGACY_UI "${manager_legacy_ui}"
+    fi
+    if [[ -z "$(env_get COMFYUI_BACKUP_ENABLED "" .env)" ]]; then
+        env_set COMFYUI_BACKUP_ENABLED "${backup_enabled}"
     fi
     if [[ -z "$(env_get TZ "" .env)" ]]; then
         env_set TZ "${timezone}"
@@ -357,7 +371,7 @@ docker compose config >/dev/null
 
 echo
 echo "Initialization complete."
-echo "Review the short .env, then run:"
+echo "Review .env before starting."
+echo "If you add or remove COMFYUI_EXTRA_MODELS_PATH, rerun scripts/init.sh."
+echo "Then run:"
 echo "  bash scripts/preflight.sh"
-echo "  docker compose build --pull comfyui"
-echo "  docker compose up -d"
