@@ -51,11 +51,25 @@ data_path="$(resolve_host_path "$(env_get COMFYUI_DATA_PATH ./data)" "${repo_roo
 models_path="$(resolve_host_path "$(env_get COMFYUI_MODELS_PATH ./data/models)" "${repo_root}")"
 extra_models_path=""
 
+compose_has_layer() {
+    local wanted="$1"
+    local layer=""
+    local -a layers=()
+
+    IFS=':' read -r -a layers <<< "${compose_file}"
+    for layer in "${layers[@]}"; do
+        if [[ "${layer}" == "${wanted}" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 if [[ -n "${extra_models_setting}" ]]; then
     extra_models_path="$(resolve_host_path "${extra_models_setting}" "${repo_root}")"
     echo
     echo "=== Extra model library ==="
-    if [[ ":${compose_file}:" == *":compose.extra-models.yaml:"* ]]; then
+    if compose_has_layer compose.extra-models.yaml; then
         echo "PASS  compose.extra-models.yaml enabled"
     else
         echo "FAIL  COMFYUI_EXTRA_MODELS_PATH is set but compose.extra-models.yaml is not enabled"
@@ -75,7 +89,7 @@ if [[ -n "${extra_models_setting}" ]]; then
         echo "      rerun: bash scripts/init.sh"
         fail=1
     fi
-elif [[ ":${compose_file}:" == *":compose.extra-models.yaml:"* ]]; then
+elif compose_has_layer compose.extra-models.yaml; then
     echo
     echo "=== Extra model library ==="
     echo "FAIL  compose.extra-models.yaml is enabled but COMFYUI_EXTRA_MODELS_PATH is empty"
@@ -83,13 +97,13 @@ elif [[ ":${compose_file}:" == *":compose.extra-models.yaml:"* ]]; then
     fail=1
 fi
 
-if [[ -n "${external_network_setting}" || ":${compose_file}:" == *":compose.external-network.yaml:"* ]]; then
+if [[ -n "${external_network_setting}" ]] || compose_has_layer compose.external-network.yaml; then
     echo
     echo "=== External Docker network ==="
     if [[ -z "${external_network_setting}" ]]; then
         echo "FAIL  compose.external-network.yaml is enabled but COMFYUI_EXTERNAL_NETWORK is empty"
         fail=1
-    elif [[ ":${compose_file}:" != *":compose.external-network.yaml:"* ]]; then
+    elif ! compose_has_layer compose.external-network.yaml; then
         echo "FAIL  COMFYUI_EXTERNAL_NETWORK is set but compose.external-network.yaml is not enabled"
         fail=1
     elif docker network inspect "${external_network_setting}" >/dev/null 2>&1; then
