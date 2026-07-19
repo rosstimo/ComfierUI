@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # Shared host-side helpers. This file is sourced by other scripts.
 
-# Restore data should inherit the destination host's ownership and filesystem
-# metadata instead of trying to recreate metadata from the staging tree. Scope
-# this cp wrapper to backup.sh only; other host-side scripts keep normal cp
-# behavior. GNU cp accepts --no-preserve after operands, so this also works with
-# the existing archive-style copy calls in the restore implementation.
+# Restore data should inherit the destination host's ownership and timestamps
+# instead of trying to recreate host-local metadata from the staging tree.
+# Preserve normal file modes so executable scripts remain executable. Scope this
+# cp wrapper to backup.sh only; other host-side scripts keep normal cp behavior.
 #
 # A restic snapshot may contain tracked Docker/Compose project files for staging
 # and disaster-recovery inspection, but live restore must not overwrite the
@@ -30,12 +29,12 @@ if [[ "${BASH_SOURCE[1]:-}" == */backup.sh ]]; then
                 command cp \
                     "${staged_repo}/.env" \
                     "${repo_root}/.env" \
-                    --no-preserve=ownership,timestamps,mode,xattr,context
+                    --no-preserve=ownership,timestamps,xattr,context
             fi
             return 0
         fi
 
-        command cp "$@" --no-preserve=ownership,timestamps,mode,xattr,context
+        command cp "$@" --no-preserve=ownership,timestamps,xattr,context
     }
 fi
 
