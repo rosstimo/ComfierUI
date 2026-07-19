@@ -1,0 +1,11 @@
+.git
+.gitignore
+.env
+config/restic.env
+data
+__pycache__
+*.pyc
+*.log
+README.md
+docs
+systemd

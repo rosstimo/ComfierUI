@@ -1,0 +1,18 @@
+services:
+  comfyui:
+    build:
+      args:
+        BASE_IMAGE: "${COMFYUI_BASE_IMAGE:-nvidia/cuda:13.0.0-base-ubuntu24.04}"
+        TORCH_INDEX_URL: "${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu130}"
+    environment:
+      COMFYUI_ACCELERATOR: nvidia
+      NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids:
+                - "${COMFYUI_GPU_DEVICE:-0}"
+              capabilities:
+                - gpu

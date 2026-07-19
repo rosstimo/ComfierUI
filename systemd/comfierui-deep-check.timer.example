@@ -1,0 +1,10 @@
+[Unit]
+Description=Monthly ComfierUI restic deep check
+
+[Timer]
+OnCalendar=monthly
+Persistent=true
+RandomizedDelaySec=12h
+
+[Install]
+WantedBy=timers.target
