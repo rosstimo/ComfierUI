@@ -8,10 +8,37 @@ Run `docker compose config` after every material change.
 
 Rerunning `scripts/init.sh` refreshes detected accelerator and identity values
 without deleting unrelated optional Compose layers such as an external network.
-Existing local choices, including `TZ`, paths, bind address, and port, are
-preserved. When `COMFYUI_EXTRA_MODELS_PATH` is set, initialization automatically
-enables `compose.extra-models.yaml`; removing the setting and rerunning init
-removes that layer.
+Existing local choices, including `TZ`, paths, bind address, port, and backup
+enablement, are preserved. When `COMFYUI_EXTRA_MODELS_PATH` is set,
+initialization automatically enables `compose.extra-models.yaml`; removing the
+setting and rerunning init removes that layer.
+
+## Applying configuration changes
+
+Different changes need different levels of action:
+
+| Change | Action |
+|---|---|
+| `COMFYUI_EXTRA_MODELS_PATH` added or removed | rerun `scripts/init.sh`, then preflight and recreate |
+| bind address, port, paths, Manager mode, `COMFYUI_SHARED_GID`, backup settings, Compose layers, external network | `docker compose up -d --force-recreate` |
+| `COMFYUI_BASE_IMAGE`, `COMFYUI_REF`, PyTorch-family versions | rebuild image, then recreate |
+| `PUID` or `PGID` | rebuild image, recreate, and review bind/volume ownership |
+| documentation-only or backup retention values before the backup service has ever started | no image rebuild; recreate running affected services when applicable |
+
+After path, permission, network, or Compose-layer changes, rerun:
+
+```bash
+bash scripts/preflight.sh
+```
+
+For a normal runtime-only configuration change, apply it with:
+
+```bash
+docker compose up -d --force-recreate
+```
+
+Do not change one member of the image compatibility set casually. Base image,
+ComfyUI revision, PyTorch-family versions, and wheel index are tested together.
 
 ## Compose selection
 
@@ -24,19 +51,22 @@ Typical values:
 
 ```dotenv
 # Modern or compatibility NVIDIA profile
-COMPOSE_FILE=compose.yaml:compose.nvidia.yaml
+COMPOSE_FILE=compose.yaml:compose.nvidia.yaml:compose.backup.yaml
 
 # CPU
-COMPOSE_FILE=compose.yaml:compose.cpu.yaml
+COMPOSE_FILE=compose.yaml:compose.cpu.yaml:compose.backup.yaml
 
 # NVIDIA plus a read-only existing model library
-COMPOSE_FILE=compose.yaml:compose.nvidia.yaml:compose.extra-models.yaml
+COMPOSE_FILE=compose.yaml:compose.nvidia.yaml:compose.backup.yaml:compose.extra-models.yaml
 COMFYUI_EXTRA_MODELS_PATH=/absolute/path/to/existing/models
 
 # NVIDIA plus an existing shared network
-COMPOSE_FILE=compose.yaml:compose.nvidia.yaml:compose.external-network.yaml
+COMPOSE_FILE=compose.yaml:compose.nvidia.yaml:compose.backup.yaml:compose.external-network.yaml
 COMFYUI_EXTERNAL_NETWORK=ai-services
 ```
+
+The backup layer is included in normal generated configuration but remains idle
+unless `COMFYUI_BACKUP_ENABLED=true`.
 
 The external network must already exist. The accelerator layer is selected by
 initialization. Other optional layers are preserved when initialization is run
@@ -83,13 +113,27 @@ one can produce a successful image build that fails when a workflow executes.
 
 Use `COMFYUI_SHARED_GID` when an existing shared workflow or model directory is
 already group-owned and the container should use that group's permissions without
-changing host ownership. For example, a shared directory owned by group `1002`
-can use `COMFYUI_SHARED_GID=1002` when its mode grants the needed access.
+changing host ownership.
+
+Find the real numeric GID and group name with:
+
+```bash
+stat -c '%g %G' /absolute/path/to/shared/directory
+```
+
+For output such as `1002 ComfyUI`, configure:
+
+```dotenv
+COMFYUI_SHARED_GID=1002
+```
+
+`scripts/check-permissions.sh` also suggests a usable shared GID when the path's
+existing group permissions would solve an access failure.
 
 Changing `PUID` or `PGID` requires an image rebuild and may require deliberate
 ownership repair on bind mounts or the named Python volume. Changing
 `COMFYUI_SHARED_GID` changes supplementary group access at runtime and does not
-change host ownership by itself.
+change host ownership by itself; recreate running containers to apply it.
 
 ## Persistent paths
 
@@ -104,6 +148,13 @@ Relative paths resolve from the repository. Absolute paths are recommended for
 external libraries. All bind sources must exist before `docker compose up`.
 Initialization creates missing repository-local paths but does not create or
 modify the external model library itself.
+
+To reuse an existing workflow directory, replace the generated value rather than
+adding a second duplicate key:
+
+```dotenv
+COMFYUI_WORKFLOWS_PATH=/absolute/path/to/existing/workflows
+```
 
 ### Existing or legacy model library
 
@@ -120,6 +171,9 @@ Then rerun:
 
 ```bash
 bash scripts/init.sh
+```
+
+```bash
 bash scripts/preflight.sh
 ```
 
@@ -156,6 +210,18 @@ For more complex layouts with several independent model roots, use
 Fresh installations detect the host timezone when possible. Existing `TZ`
 settings are not overwritten by later initialization runs.
 
+`127.0.0.1` is the safer default because only the Docker host can access the
+published port. For a trusted LAN or a protected server, set:
+
+```dotenv
+COMFYUI_BIND_ADDRESS=0.0.0.0
+```
+
+Then recreate the container and browse to `http://<server-ip>:8188` from another
+machine. Binding to `0.0.0.0` exposes the port on every host interface allowed by
+your firewall, so do not publish an unauthenticated ComfyUI service directly to
+the public Internet.
+
 ## Manager
 
 | Variable | Purpose |
@@ -187,6 +253,6 @@ to make an unexplained installation error disappear.
 - `config/manager-config.ini.example`: Manager keys written by the entrypoint.
 - `config/extra_model_paths.yaml.example`: customizable multi-root model mapping.
 - `examples/compose.extra-model-paths.yaml`: mounts for the customizable example.
-- `config/restic.env.example`: backup source and retention choices.
-- `config/restic-excludes.txt.example`: backup excludes.
-- `systemd/*.example`: host backup, maintenance, and deep-check units.
+- `config/restic.env.example`: advanced host-managed backup source and retention choices.
+- `config/restic-excludes.txt.example`: advanced host-managed backup excludes.
+- `systemd/*.example`: advanced host backup, maintenance, and deep-check units.
