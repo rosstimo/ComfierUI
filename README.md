@@ -243,10 +243,10 @@ http://comfyui:8188
 
 See [Networking](docs/NETWORKING.md).
 
-## Built-in automatic backup and restore
+## Built-in automatic backup and recovery
 
-ComfierUI includes an opt-in Docker-managed backup sidecar. Normal users do not
-need restic, cron, or systemd installed on the host.
+ComfierUI includes an opt-in Docker-managed restic backup sidecar. Normal users do
+not need restic, cron, or systemd installed on the host.
 
 Enable it in `.env`:
 
@@ -255,20 +255,20 @@ COMFYUI_BACKUP_ENABLED=true
 ```
 
 With the default configuration it automatically creates encrypted backups of the
-important small recovery state: deployment configuration, custom nodes, user and
-Manager state, and workflows. Inputs, outputs, models, the extra/legacy model
-library, and the Python volume are excluded unless explicitly enabled.
+important small recovery state: local deployment configuration, custom nodes,
+user and Manager state, and workflows. Inputs, outputs, models, the extra/legacy
+model library, and the Python volume are excluded unless explicitly enabled.
 
-Every snapshot also records a recovery blueprint describing reproducible or
-excluded state such as version pins, custom-node commits, Python package versions,
-and model inventories. The idea is to back up what is unique, rebuild what is
-reproducible, and keep a roadmap back to the known state.
+Every snapshot also records a recovery blueprint describing the actual running
+ComfyUI/container state plus reproducible or excluded state such as version pins,
+custom-node commits, Python package versions, and model inventories. The idea is
+to back up what is unique, rebuild what is reproducible, and keep a roadmap back
+to the known-good state.
 
 Users can make the backup as large as they want. Models, extra models, Python,
 inputs, and outputs can all be enabled, while optional include/exclude policy
-files allow selective protection of rare or irreplaceable assets. This is useful
-for models that may become private, gated, deleted, renamed, or otherwise hard to
-obtain again.
+files allow selective protection of rare or irreplaceable assets. Models default
+off because of size, not because they are guaranteed to remain downloadable.
 
 The default schedule is one backup every 24 hours, keeping 7 daily, 4 weekly, 12
 monthly, and 3 yearly recovery points, plus the latest 3 snapshots. The local
@@ -279,15 +279,32 @@ Workflow files can contain API keys or tokens stored in node settings, and Comfy
 images can embed workflow metadata. Keep workflows and image directories out of
 Git and treat backup repositories and restored data as sensitive.
 
-`bash scripts/backup.sh restore SNAPSHOT` performs a functional rollback of the
-live deployment. `bash scripts/backup.sh stage SNAPSHOT` is the optional
-non-destructive command for extracting a snapshot only when you want to inspect
-or manually recover individual files.
+For an existing deployment rollback:
 
-Read [Backup and restore](docs/BACKUP_RESTORE.md) for include/exclude policy,
-schedule and retention settings, manual backups, rollback behavior, and advanced
-external/offsite backup options. See [Recovery blueprint](docs/RECOVERY_BLUEPRINT.md)
-for the fresh-clone and known-state reconstruction model.
+```bash
+bash scripts/backup.sh restore SNAPSHOT
+```
+
+For a freshly initialized clone recovering from an existing built-in restic
+repository:
+
+```bash
+bash scripts/recover.sh SNAPSHOT
+```
+
+Fresh-clone recovery preserves host-local hardware, identity, path, port, network,
+and backup choices while reconstructing the recorded Git commit, exact ComfyUI
+commit, pinned core runtime, Manager state, custom nodes, user state, and workflows.
+Deliberately excluded models and packages are inventoried and reported rather than
+falsely claimed restored.
+
+`bash scripts/backup.sh stage SNAPSHOT` remains available as a non-destructive way
+to extract a snapshot for manual inspection.
+
+Read [Backup and restore](docs/BACKUP_RESTORE.md) for backup policy, retention,
+live rollback, fresh-clone recovery, and advanced external/offsite options. See
+[Recovery blueprint](docs/RECOVERY_BLUEPRINT.md) for the portable-state and
+known-state reconstruction model.
 
 ## Documentation
 
