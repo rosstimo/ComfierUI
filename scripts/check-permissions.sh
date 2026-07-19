@@ -172,9 +172,12 @@ for label, path, write_required, mount_read_only, local_path in items:
 
     if mount_read_only:
         print(f"PASS  {display}: read/traverse available; Docker mount blocks writes")
-    elif label == "models" and not writable:
-        print(f"WARN  {display}: readable but not writable; Manager model downloads will fail")
-        maybe_suggest_gid(path, 0b111 if path.is_dir() else 0b110)
+    elif label == "models":
+        if writable:
+            print(f"PASS  {display}: read/write/traverse available")
+        else:
+            print(f"WARN  {display}: readable but not writable; Manager model downloads will fail")
+            maybe_suggest_gid(path, 0b111 if path.is_dir() else 0b110)
     elif write_required:
         print(f"PASS  {display}: read/write/traverse available")
     else:
@@ -185,8 +188,6 @@ if failures:
     print(f"Container identity: {uid}:{gid}; supplementary shared GID: {shared_gid}")
     print("COMFYUI_SHARED_GID adds one supplementary numeric group without changing host ownership.")
     print("Use the SUGGEST line above when an existing shared path's group permissions already fit.")
-    if local_repair_needed:
-        print("LOCAL_REPAIR_NEEDED")
     sys.exit(2 if local_repair_needed else 1)
 
 print()
