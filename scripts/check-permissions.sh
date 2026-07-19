@@ -6,6 +6,16 @@ cd "${repo_root}"
 # shellcheck source=scripts/lib.sh
 source scripts/lib.sh
 
+verbose=false
+case "${1:-}" in
+    "") ;;
+    --verbose) verbose=true ;;
+    *)
+        echo "Usage: $0 [--verbose]" >&2
+        exit 2
+        ;;
+esac
+
 if [[ ! -f .env ]]; then
     echo "ERROR: .env is missing. Run scripts/init.sh first." >&2
     exit 1
@@ -25,32 +35,41 @@ fi
 
 set +e
 python3 - "${puid}" "${pgid}" "${shared_gid}" \
-    "${data_path}" "${models_path}" "${workflows_path}" "${extra_models_path}" <<'PY'
+    "${data_path}" "${models_path}" "${workflows_path}" "${extra_models_path}" "${verbose}" <<'PY'
 from __future__ import annotations
 
+import grp
 import stat
 import sys
 from pathlib import Path
 
 uid, gid, shared_gid = map(int, sys.argv[1:4])
 data_path = Path(sys.argv[4])
+models_path = Path(sys.argv[5])
+workflows_path = Path(sys.argv[6])
+extra_models_raw = sys.argv[7]
+verbose = sys.argv[8].lower() == "true"
+
 items = [
-    ("data root", data_path, True, False),
-    ("cache", data_path / "cache", True, False),
-    ("custom_nodes", data_path / "custom_nodes", True, False),
-    ("home", data_path / "home", True, False),
-    ("input", data_path / "input", True, False),
-    ("output", data_path / "output", True, False),
-    ("temp", data_path / "temp", True, False),
-    ("user", data_path / "user", True, False),
-    ("user/default", data_path / "user" / "default", True, False),
-    ("models", Path(sys.argv[5]), False, False),
-    ("workflows", Path(sys.argv[6]), True, False),
+    ("data root", data_path, True, False, True),
+    ("cache", data_path / "cache", True, False, True),
+    ("custom_nodes", data_path / "custom_nodes", True, False, True),
+    ("home", data_path / "home", True, False, True),
+    ("input", data_path / "input", True, False, True),
+    ("output", data_path / "output", True, False, True),
+    ("temp", data_path / "temp", True, False, True),
+    ("user", data_path / "user", True, False, True),
+    ("user/default", data_path / "user" / "default", True, False, True),
+    ("models", models_path, False, False, False),
+    ("workflows", workflows_path, True, False, False),
 ]
-if sys.argv[7]:
-    items.append(("extra models", Path(sys.argv[7]), False, True))
+if extra_models_raw:
+    items.append(("extra models", Path(extra_models_raw), False, True, False))
+
 groups = {gid, shared_gid}
 failures = 0
+local_repair_needed = False
+suggested_gids: set[int] = set()
 
 
 def permissions_for(path: Path) -> int:
@@ -65,19 +84,43 @@ def permissions_for(path: Path) -> int:
     return mode & 0b111
 
 
-for label, path, write_required, mount_read_only in items:
+def gid_name(value: int) -> str:
+    try:
+        return grp.getgrgid(value).gr_name
+    except KeyError:
+        return "unknown-group"
+
+
+def maybe_suggest_gid(path: Path, required_bits: int) -> None:
+    st = path.stat()
+    candidate = st.st_gid
+    group_bits = (st.st_mode >> 3) & 0b111
+    if candidate not in groups and group_bits & required_bits == required_bits:
+        if candidate not in suggested_gids:
+            print(
+                f"SUGGEST  set COMFYUI_SHARED_GID={candidate} "
+                f"({gid_name(candidate)}) to use existing group permissions"
+            )
+            suggested_gids.add(candidate)
+
+
+for label, path, write_required, mount_read_only, local_path in items:
     suffix = " (read-only mount)" if mount_read_only else ""
-    print(f"--- {label}{suffix}: {path} ---")
+    display = f"{label}{suffix}"
+
     if not path.exists():
-        print("FAIL  path is missing")
+        print(f"FAIL  {display}: path is missing: {path}")
         failures += 1
+        local_repair_needed |= local_path
         continue
 
     st = path.stat()
-    print(
-        f"owner={st.st_uid} group={st.st_gid} mode={stat.S_IMODE(st.st_mode):04o} "
-        f"type={'directory' if path.is_dir() else 'file'}"
-    )
+    if verbose:
+        print(
+            f"INFO  {display}: {path} "
+            f"owner={st.st_uid} group={st.st_gid} "
+            f"mode={stat.S_IMODE(st.st_mode):04o}"
+        )
 
     blocked_parent = None
     current = path.resolve(strict=False)
@@ -85,68 +128,93 @@ for label, path, write_required, mount_read_only in items:
         if component.exists() and component.is_dir() and not permissions_for(component) & 0b001:
             blocked_parent = component
             break
+
     if blocked_parent:
-        print(f"FAIL  container identity cannot traverse: {blocked_parent}")
+        blocked = blocked_parent.stat()
+        print(f"FAIL  {display}: container cannot traverse {blocked_parent}")
+        if not verbose:
+            print(
+                f"      owner={blocked.st_uid} group={blocked.st_gid} "
+                f"mode={stat.S_IMODE(blocked.st_mode):04o}"
+            )
+        maybe_suggest_gid(blocked_parent, 0b001)
         failures += 1
+        local_repair_needed |= local_path
         continue
 
     bits = permissions_for(path)
     readable = bool(bits & 0b100)
     writable = bool(bits & 0b010)
     traversable = not path.is_dir() or bool(bits & 0b001)
-    print(f"container read: {'yes' if readable else 'NO'}")
-    if mount_read_only:
-        print(
-            "container write: blocked by read-only mount "
-            f"(host path permission: {'yes' if writable else 'NO'})"
-        )
-    else:
-        print(f"container write: {'yes' if writable else 'NO'}")
-    print(f"container traverse: {'yes' if traversable else 'NO'}")
+
+    required_bits = 0b100 | (0b001 if path.is_dir() else 0)
+    if write_required:
+        required_bits |= 0b010
 
     if not readable or not traversable or (write_required and not writable):
+        access = []
+        if not readable:
+            access.append("read")
+        if not traversable:
+            access.append("traverse")
+        if write_required and not writable:
+            access.append("write")
+        print(f"FAIL  {display}: missing container access: {', '.join(access)}")
+        if not verbose:
+            print(
+                f"      path={path} owner={st.st_uid} group={st.st_gid} "
+                f"mode={stat.S_IMODE(st.st_mode):04o}"
+            )
+        maybe_suggest_gid(path, required_bits)
         failures += 1
-    elif label == "models" and not writable:
-        print("WARN  built-in models are read-only; generation works, Manager model downloads do not")
+        local_repair_needed |= local_path
+        continue
 
-sys.exit(1 if failures else 0)
+    if mount_read_only:
+        print(f"PASS  {display}: read/traverse available; Docker mount blocks writes")
+    elif label == "models" and not writable:
+        print(f"WARN  {display}: readable but not writable; Manager model downloads will fail")
+        maybe_suggest_gid(path, 0b111 if path.is_dir() else 0b110)
+    elif write_required:
+        print(f"PASS  {display}: read/write/traverse available")
+    else:
+        print(f"PASS  {display}: read/traverse available")
+
+if failures:
+    print()
+    print(f"Container identity: {uid}:{gid}; supplementary shared GID: {shared_gid}")
+    print("COMFYUI_SHARED_GID adds one supplementary numeric group without changing host ownership.")
+    print("Use the SUGGEST line above when an existing shared path's group permissions already fit.")
+    if local_repair_needed:
+        print("LOCAL_REPAIR_NEEDED")
+    sys.exit(2 if local_repair_needed else 1)
+
+print()
+print(f"Permissions OK for container identity {uid}:{gid} with shared GID {shared_gid}.")
 PY
 status=$?
 set -e
 
-cat <<EOF
+if [[ "${status}" -eq 2 ]]; then
+    cat <<EOF
 
-Container identity: ${puid}:${pgid}; supplementary shared GID: ${shared_gid}
+One or more repository-local data paths need repair. Review these paths before
+running recursive changes. A typical repair for the repository-local data root is:
 
-PUID/PGID set the container's primary user and group. COMFYUI_SHARED_GID adds
-one supplementary group so the container can use existing group permissions
-without changing host ownership. For example, a shared directory owned by group
-1002 can be accessed by setting COMFYUI_SHARED_GID=1002 when its mode permits it.
-
-For new repository-local data, a typical repair is:
   sudo chown -R ${puid}:${pgid} "${data_path}"
   sudo chmod -R u+rwX,g+rwX,o-rwx "${data_path}"
   sudo find "${data_path}" -type d -exec chmod g+s {} +
 
-chown/chgrp change host ownership; chmod changes host permission bits. Prefer
-COMFYUI_SHARED_GID for an existing shared group before changing ownership.
-
-The built-in model tree should normally remain writable for Manager downloads:
-  ${models_path}
+Prefer COMFYUI_SHARED_GID for existing shared workflow/model libraries before
+changing their ownership.
 EOF
+elif [[ "${status}" -ne 0 ]]; then
+    cat <<'EOF'
 
-if [[ -n "${extra_models_path}" ]]; then
-    cat <<EOF
-
-The extra model library is intentionally mounted read-only. Preserve its owner
-and grant the container identity read/traverse access as needed:
-  ${extra_models_path}
+Review the failed external/shared paths. Prefer COMFYUI_SHARED_GID when their
+existing group permissions already provide the needed access. Avoid recursive
+chown/chmod on shared libraries unless changing host ownership is intentional.
 EOF
 fi
-
-cat <<'EOF'
-
-Review paths before running recursive permission changes.
-EOF
 
 exit "${status}"
