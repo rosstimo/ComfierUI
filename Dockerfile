@@ -110,6 +110,7 @@ RUN printf 'BASE_IMAGE=%s\nCOMFYUI_REF=%s\nPYTORCH_BUILD_VERSION=%s\nTORCHVISION
     && chown -R "${PUID}:${PGID}" /data /opt/venv
 
 COPY --chmod=0755 docker/entrypoint.sh /usr/local/bin/comfierui-entrypoint
+COPY --chmod=0755 docker/entrypoint-wrapper.sh /usr/local/bin/comfierui-entrypoint-wrapper
 
 USER ${PUID}:${PGID}
 WORKDIR /opt/ComfyUI
@@ -122,5 +123,5 @@ ENV HOME=/data/home \
 
 EXPOSE 8188
 
-ENTRYPOINT ["/usr/local/bin/comfierui-entrypoint"]
+ENTRYPOINT ["/usr/local/bin/comfierui-entrypoint-wrapper"]
 CMD ["--listen", "0.0.0.0", "--port", "8188", "--dont-print-server"]
