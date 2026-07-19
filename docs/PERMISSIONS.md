@@ -13,42 +13,94 @@ directory.
 The container uses:
 
 - `PUID:PGID` as its primary numeric identity,
-- `COMFYUI_SHARED_GID` as a supplementary group,
+- `COMFYUI_SHARED_GID` as one supplementary numeric group,
 - umask `0002` so newly created shared files normally retain group write access.
 
 ## Existing external libraries
 
 Initialization leaves existing directories and ownership untouched. Diagnose
-first:
+access first:
 
 ```bash
 bash scripts/check-permissions.sh
+```
+
+The normal output is intentionally compact. For owner, group, mode, and full path
+details, use:
+
+```bash
+bash scripts/check-permissions.sh --verbose
 ```
 
 The check evaluates access using the configured container UID and groups, not
 merely the account running the shell. It also detects blocked parent-directory
 traversal.
 
+When an inaccessible path already grants the needed permissions to its owning
+group, the checker suggests the numeric `COMFYUI_SHARED_GID` and host group name.
+This is usually safer than recursively changing an existing shared library.
+
+You can inspect a path's numeric GID and group name directly with:
+
+```bash
+stat -c '%g %G' /absolute/path/to/shared/directory
+```
+
+For example, output such as:
+
+```text
+1002 ComfyUI
+```
+
+maps directly to:
+
+```dotenv
+COMFYUI_SHARED_GID=1002
+```
+
+One supplementary shared GID can cover multiple model and workflow paths when
+they use the same group.
+
+After changing `COMFYUI_SHARED_GID`, recreate running containers:
+
+```bash
+docker compose up -d --force-recreate
+```
+
 ## Shared writable models
+
+For an intentionally writable shared model tree, first identify the existing
+shared group's numeric GID and configure it rather than inventing a placeholder
+number:
 
 ```dotenv
 COMFYUI_MODELS_PATH=/absolute/path/to/models
-COMFYUI_SHARED_GID=1234
+COMFYUI_SHARED_GID=1002
 ```
 
-One common host policy is:
+When changing host permissions is actually desired, a typical group-based policy
+is:
 
 ```bash
-sudo chgrp -R 1234 /absolute/path/to/models
+sudo chgrp -R 1002 /absolute/path/to/models
+```
+
+```bash
 sudo chmod -R g+rwX /absolute/path/to/models
+```
+
+```bash
 sudo find /absolute/path/to/models -type d -exec chmod g+s {} +
 ```
 
-This preserves the owner, grants the shared group access, and causes newly
-created files to inherit the directory group. Review before recursive changes.
+Replace `1002` with the real group selected for that library. These commands
+preserve the owner, grant the shared group access, and cause newly created files
+to inherit the directory group. Review paths before recursive changes.
 
-A read-only model library can still serve generation, but Manager model
-downloads and model-management nodes will not be able to write there.
+A read-only extra model library can still serve generation. ComfierUI's standard
+extra-model mount is intentionally read-only even when the underlying host group
+has write permission. Manager downloads continue going to the normal writable
+`COMFYUI_MODELS_PATH` tree.
 
 ## Why not root
 
@@ -66,8 +118,14 @@ ownership repair or intentional recreation.
 
 ```bash
 docker compose exec comfyui id
+```
+
+```bash
 docker compose exec comfyui sh -lc \
   'test -w /opt/ComfyUI/custom_nodes && echo custom_nodes-writable'
+```
+
+```bash
 docker compose exec comfyui sh -lc \
   'test -r /opt/ComfyUI/models && echo models-readable'
 ```
