@@ -1,0 +1,11 @@
+services:
+  comfyui:
+    networks:
+      - default
+      - shared
+
+networks:
+  default: {}
+  shared:
+    external: true
+    name: "${COMFYUI_EXTERNAL_NETWORK:?Set COMFYUI_EXTERNAL_NETWORK in .env}"

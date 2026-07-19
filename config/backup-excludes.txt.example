@@ -1,0 +1,20 @@
+# Optional restic exclude patterns for the built-in backup.
+#
+# Copy this file to config/backup-excludes.txt and set:
+#   COMFYUI_BACKUP_EXCLUDE_FILE=./config/backup-excludes.txt
+#
+# Patterns use restic's exclude syntax, including ** wildcards. Blank lines and
+# comments are ignored by restic.
+#
+# Examples:
+# **/cache/**
+# **/temp/**
+# **/__pycache__/**
+# **/*.pyc
+#
+# Example model policy: include the models category, but skip a replaceable tree:
+# /source/models/checkpoints/replaceable/**
+#
+# Example inverse-style policy using negation is also supported by restic, but
+# remember that once a directory itself is excluded, files beneath it cannot be
+# re-included. Prefer excluding specific replaceable subtrees instead.

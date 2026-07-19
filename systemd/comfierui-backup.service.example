@@ -1,0 +1,19 @@
+[Unit]
+Description=Back up ComfierUI with restic
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+User=CHANGE_ME
+Group=CHANGE_ME
+WorkingDirectory=/path/to/ComfierUI
+Environment=RESTIC_ENV_FILE=/path/to/ComfierUI/config/restic.env
+Environment=RESTIC_EXCLUDE_FILE=/path/to/ComfierUI/config/restic-excludes.txt
+StateDirectory=comfierui-backup
+UMask=0077
+NoNewPrivileges=true
+ExecStart=/usr/bin/flock -n /var/lib/comfierui-backup/restic.lock /path/to/ComfierUI/scripts/restic-backup.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

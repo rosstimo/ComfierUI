@@ -1,0 +1,5 @@
+[default]
+# The entrypoint writes these two values from .env at every startup while
+# preserving other Manager settings in the live file.
+security_level = normal
+network_mode = personal_cloud
