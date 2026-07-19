@@ -54,11 +54,14 @@ extra_models_path=""
 compose_has_layer() {
     local wanted="$1"
     local layer=""
+    local trimmed=""
     local -a layers=()
 
     IFS=':' read -r -a layers <<< "${compose_file}"
     for layer in "${layers[@]}"; do
-        if [[ "${layer}" == "${wanted}" ]]; then
+        trimmed="${layer#"${layer%%[![:space:]]*}"}"
+        trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+        if [[ "${trimmed}" == "${wanted}" ]]; then
             return 0
         fi
     done
@@ -105,6 +108,7 @@ if [[ -n "${external_network_setting}" ]] || compose_has_layer compose.external-
         fail=1
     elif ! compose_has_layer compose.external-network.yaml; then
         echo "FAIL  COMFYUI_EXTERNAL_NETWORK is set but compose.external-network.yaml is not enabled"
+        printf '      parsed COMPOSE_FILE=%q\n' "${compose_file}"
         fail=1
     elif docker network inspect "${external_network_setting}" >/dev/null 2>&1; then
         echo "PASS  external network exists: ${external_network_setting}"
