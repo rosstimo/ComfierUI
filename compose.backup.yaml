@@ -10,13 +10,16 @@ services:
       - /bin/sh
       - -c
       - >-
-        mkdir -p /backups &&
-        chown "$${PUID}:$${PGID}" /backups &&
+        mkdir -p /backups /python &&
+        chown "$${PUID}:$${PGID}" /backups /python &&
         chmod 2770 /backups
     volumes:
       - type: bind
         source: "${COMFYUI_BACKUP_PATH:-./backups}"
         target: /backups
+      - type: volume
+        source: comfyui-python
+        target: /python
 
   backup:
     image: "restic/restic:${COMFYUI_BACKUP_RESTIC_VERSION:-0.19.1}"
