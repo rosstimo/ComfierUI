@@ -123,3 +123,16 @@ if not path.is_absolute():
 print(path.resolve(strict=False))
 PY
 }
+
+# A fresh-clone recovery must never silently build over the normal :latest tag.
+# If the recovery host did not explicitly choose an image tag, derive an isolated
+# one from the Compose project name before recover.sh performs any build.
+if [[ "${BASH_SOURCE[1]:-}" == */recover.sh && -f .env ]] && \
+   [[ -z "$(env_get COMFYUI_IMAGE_TAG "" .env)" ]]; then
+    recovery_project_name="$(env_get COMPOSE_PROJECT_NAME comfierui .env)"
+    recovery_project_name="$(printf '%s' "${recovery_project_name}" | sed 's/[^A-Za-z0-9_.-]/-/g')"
+    [[ -n "${recovery_project_name}" ]] || recovery_project_name=comfierui
+    recovery_image_tag="recovery-${recovery_project_name}"
+    env_set COMFYUI_IMAGE_TAG "${recovery_image_tag}" .env
+    echo "Fresh recovery image tag not set; using COMFYUI_IMAGE_TAG=${recovery_image_tag}"
+fi
