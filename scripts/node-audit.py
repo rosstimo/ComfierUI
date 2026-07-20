@@ -1,16 +1,11 @@
 #!/usr/bin/env python3
-"""Audit installed ComfyUI node-pack conflicts against a running instance.
+"""Audit installed ComfyUI node-pack overlaps and saved-workflow usage.
 
-Uses only the Python standard library. The audit combines:
-- installed custom-node directories on the host,
-- ComfyUI Manager's extension-node-map.json,
-- the running ComfyUI /object_info registry,
-- and optionally saved workflow usage.
-
-Manager's node map is treated as advisory metadata. "Installed conflict" means
-Manager knows multiple extensions that claim the same node ID and multiple
-matching extension directories are installed locally. "Runtime owner" is the
-currently registered Python module reported by /object_info.
+Uses only the Python standard library. Manager's extension-node map is advisory
+static-analysis metadata. A Manager-known installed overlap means multiple
+Manager entries associated with locally installed packs list the same node ID.
+That does not prove both packs register that node at runtime. /object_info is
+used to report the current runtime owner when available.
 """
 
 from __future__ import annotations
@@ -28,12 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-FRONTEND_ONLY_NODE_TYPES = {
-    "Note",
-    "PrimitiveNode",
-    "Reroute",
-}
-
+FRONTEND_ONLY_NODE_TYPES = {"Note", "PrimitiveNode", "Reroute"}
 INACTIVE_NODE_MODES = {2, 4}
 
 
@@ -45,9 +35,9 @@ class ManagerEntry:
 
 
 @dataclass(frozen=True)
-class Conflict:
+class Overlap:
     node_id: str
-    installed_packs: tuple[str, ...]
+    installed_claimants: tuple[str, ...]
     runtime_owner: str | None
     workflow_files: tuple[str, ...]
     inactive_workflow_files: tuple[str, ...]
@@ -56,8 +46,8 @@ class Conflict:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Report ComfyUI node-ID conflicts where multiple conflicting "
-            "Manager extensions are actually installed locally."
+            "Report Manager-known node-ID overlaps between locally installed "
+            "ComfyUI node packs, current runtime ownership, and optional workflow usage."
         )
     )
     parser.add_argument(
@@ -72,8 +62,8 @@ def parse_args() -> argparse.Namespace:
         "--manager-map",
         type=Path,
         help=(
-            "Manager extension-node-map.json; default is the newest cached map "
-            "under COMFYUI_DATA_PATH/user/__manager/cache"
+            "Manager extension-node-map.json; default is newest cached map under "
+            "COMFYUI_DATA_PATH/user/__manager/cache"
         ),
     )
     parser.add_argument(
@@ -94,6 +84,11 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--only-used-overlaps",
+        action="store_true",
+        help="with --workflows, print only overlaps referenced by active saved workflows",
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="emit machine-readable JSON instead of the human report",
@@ -109,7 +104,6 @@ def env_values(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     if not path.is_file():
         return values
-
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -132,8 +126,8 @@ def resolve_host_path(value: str, base: Path) -> Path:
 def default_paths(args: argparse.Namespace) -> tuple[Path, Path, str, Path | None]:
     root = repo_root()
     env = env_values(root / ".env")
-
     data_path = resolve_host_path(env.get("COMFYUI_DATA_PATH", "./data"), root)
+
     custom_nodes = (
         args.custom_nodes.resolve(strict=False)
         if args.custom_nodes
@@ -162,8 +156,7 @@ def default_paths(args: argparse.Namespace) -> tuple[Path, Path, str, Path | Non
     if args.workflows is not None:
         if args.workflows == "__ENV__":
             workflow_root = resolve_host_path(
-                env.get("COMFYUI_WORKFLOWS_PATH", "./workflows"),
-                root,
+                env.get("COMFYUI_WORKFLOWS_PATH", "./workflows"), root
             )
         else:
             workflow_root = resolve_host_path(args.workflows, Path.cwd())
@@ -179,15 +172,12 @@ def repo_basename(repo: str) -> str:
     parsed = urllib.parse.urlparse(repo)
     path = parsed.path.rstrip("/")
     name = path.rsplit("/", 1)[-1] if path else repo.rstrip("/").rsplit("/", 1)[-1]
-    if name.endswith(".git"):
-        name = name[:-4]
-    return name
+    return name[:-4] if name.endswith(".git") else name
 
 
 def installed_pack_names(custom_nodes: Path) -> list[str]:
     if not custom_nodes.is_dir():
         raise RuntimeError(f"custom_nodes directory not found: {custom_nodes}")
-
     return sorted(
         (
             path.name
@@ -203,7 +193,6 @@ def load_manager_entries(path: Path) -> list[ManagerEntry]:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"could not read Manager node map {path}: {exc}") from exc
-
     if not isinstance(payload, dict):
         raise RuntimeError(f"unexpected Manager node-map structure in {path}")
 
@@ -211,26 +200,17 @@ def load_manager_entries(path: Path) -> list[ManagerEntry]:
     for repo, value in payload.items():
         if not isinstance(repo, str) or not isinstance(value, list) or not value:
             continue
-
         node_ids = value[0]
         metadata = value[1] if len(value) > 1 and isinstance(value[1], dict) else {}
         if not isinstance(node_ids, list):
             continue
-
         clean_node_ids = tuple(
             node_id for node_id in node_ids if isinstance(node_id, str)
         )
         title = metadata.get("title_aux")
         if not isinstance(title, str) or not title.strip():
             title = repo_basename(repo)
-
-        entries.append(
-            ManagerEntry(
-                repo=repo,
-                title=title,
-                node_ids=clean_node_ids,
-            )
-        )
+        entries.append(ManagerEntry(repo=repo, title=title, node_ids=clean_node_ids))
     return entries
 
 
@@ -244,7 +224,6 @@ def match_entries_to_installed(
 
     matched: dict[ManagerEntry, str] = {}
     ambiguous: dict[str, list[ManagerEntry]] = defaultdict(list)
-
     for entry in entries:
         aliases = {
             normalize_pack_name(repo_basename(entry.repo)),
@@ -253,13 +232,11 @@ def match_entries_to_installed(
         candidates: set[str] = set()
         for alias in aliases:
             candidates.update(by_normalized.get(alias, []))
-
         if len(candidates) == 1:
             matched[entry] = next(iter(candidates))
         elif len(candidates) > 1:
             for candidate in sorted(candidates, key=str.casefold):
                 ambiguous[candidate].append(entry)
-
     return matched, ambiguous
 
 
@@ -269,10 +246,8 @@ def load_object_info(url: str) -> dict[str, dict[str, Any]]:
             payload = json.load(response)
     except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"could not read {url}: {exc}") from exc
-
     if not isinstance(payload, dict):
         raise RuntimeError(f"unexpected object_info response from {url}")
-
     return {
         node_id: info
         for node_id, info in payload.items()
@@ -281,15 +256,10 @@ def load_object_info(url: str) -> dict[str, dict[str, Any]]:
 
 
 def runtime_pack_from_module(module: Any) -> str | None:
-    if not isinstance(module, str):
+    if not isinstance(module, str) or not module.startswith("custom_nodes."):
         return None
-    prefix = "custom_nodes."
-    if not module.startswith(prefix):
-        return None
-    remainder = module[len(prefix) :]
-    if not remainder:
-        return None
-    return remainder.split(".", 1)[0]
+    remainder = module[len("custom_nodes.") :]
+    return remainder.split(".", 1)[0] if remainder else None
 
 
 def runtime_node_owners(
@@ -297,14 +267,12 @@ def runtime_node_owners(
 ) -> tuple[dict[str, str], dict[str, set[str]]]:
     node_owner: dict[str, str] = {}
     pack_nodes: dict[str, set[str]] = defaultdict(set)
-
     for node_id, info in object_info.items():
         pack = runtime_pack_from_module(info.get("python_module"))
         if pack is None:
             continue
         node_owner[node_id] = pack
         pack_nodes[pack].add(node_id)
-
     return node_owner, pack_nodes
 
 
@@ -331,7 +299,6 @@ def workflow_usage(
     active: dict[str, set[str]] = defaultdict(set)
     inactive: dict[str, set[str]] = defaultdict(set)
     errors: list[tuple[str, str]] = []
-
     for path in sorted(root.rglob("*.json")):
         relative = str(path.relative_to(root))
         try:
@@ -342,7 +309,6 @@ def workflow_usage(
 
         active_in_file: set[str] = set()
         inactive_in_file: set[str] = set()
-
         for node in iter_nodes(data):
             node_type = node["type"]
             if node_type in FRONTEND_ONLY_NODE_TYPES:
@@ -357,38 +323,28 @@ def workflow_usage(
             active[node_type].add(relative)
         for node_type in inactive_in_file - active_in_file:
             inactive[node_type].add(relative)
-
     return active, inactive, errors
 
 
-def build_conflicts(
-    entries: list[ManagerEntry],
+def build_overlaps(
     matched: dict[ManagerEntry, str],
     runtime_owners: dict[str, str],
     active_usage: dict[str, set[str]],
     inactive_usage: dict[str, set[str]],
-) -> tuple[list[Conflict], dict[str, int]]:
-    global_claimants: dict[str, list[ManagerEntry]] = defaultdict(list)
+) -> list[Overlap]:
     installed_claimants: dict[str, set[str]] = defaultdict(set)
-
-    for entry in entries:
-        for node_id in entry.node_ids:
-            global_claimants[node_id].append(entry)
-
-        installed_pack = matched.get(entry)
-        if installed_pack is None:
-            continue
+    for entry, installed_pack in matched.items():
         for node_id in entry.node_ids:
             installed_claimants[node_id].add(installed_pack)
 
-    conflicts: list[Conflict] = []
+    overlaps: list[Overlap] = []
     for node_id, packs in installed_claimants.items():
         if len(packs) < 2:
             continue
-        conflicts.append(
-            Conflict(
+        overlaps.append(
+            Overlap(
                 node_id=node_id,
-                installed_packs=tuple(sorted(packs, key=str.casefold)),
+                installed_claimants=tuple(sorted(packs, key=str.casefold)),
                 runtime_owner=runtime_owners.get(node_id),
                 workflow_files=tuple(sorted(active_usage.get(node_id, set()))),
                 inactive_workflow_files=tuple(
@@ -396,38 +352,52 @@ def build_conflicts(
                 ),
             )
         )
-
-    global_conflict_counts: dict[str, int] = defaultdict(int)
-    for node_id, claimants in global_claimants.items():
-        if len(claimants) < 2:
-            continue
-        packs_seen: set[str] = set()
-        for entry in claimants:
-            installed_pack = matched.get(entry)
-            if installed_pack is not None:
-                packs_seen.add(installed_pack)
-        for pack in packs_seen:
-            global_conflict_counts[pack] += 1
-
-    return sorted(conflicts, key=lambda item: item.node_id.casefold()), global_conflict_counts
+    return sorted(overlaps, key=lambda item: item.node_id.casefold())
 
 
-def installed_conflict_counts(conflicts: list[Conflict]) -> dict[str, int]:
-    counts: dict[str, int] = defaultdict(int)
-    for conflict in conflicts:
-        for pack in conflict.installed_packs:
-            counts[pack] += 1
-    return counts
+def pack_workflow_usage(
+    pack_nodes: dict[str, set[str]],
+    active_usage: dict[str, set[str]],
+) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    pack_used_nodes: dict[str, set[str]] = defaultdict(set)
+    pack_workflows: dict[str, set[str]] = defaultdict(set)
+    for pack, nodes in pack_nodes.items():
+        for node_id in nodes:
+            files = active_usage.get(node_id, set())
+            if files:
+                pack_used_nodes[pack].add(node_id)
+                pack_workflows[pack].update(files)
+    return pack_used_nodes, pack_workflows
 
 
-def workflow_conflict_counts(conflicts: list[Conflict]) -> dict[str, int]:
-    counts: dict[str, int] = defaultdict(int)
-    for conflict in conflicts:
-        if not conflict.workflow_files:
-            continue
-        for pack in conflict.installed_packs:
-            counts[pack] += 1
-    return counts
+def pack_overlap_stats(
+    installed: list[str],
+    overlaps: list[Overlap],
+) -> dict[str, dict[str, int]]:
+    stats = {
+        pack: {
+            "manager_overlaps": 0,
+            "runtime_wins": 0,
+            "other_owner": 0,
+            "unregistered": 0,
+            "workflow_used": 0,
+        }
+        for pack in installed
+    }
+    for overlap in overlaps:
+        for pack in overlap.installed_claimants:
+            if pack not in stats:
+                continue
+            stats[pack]["manager_overlaps"] += 1
+            if overlap.runtime_owner is None:
+                stats[pack]["unregistered"] += 1
+            elif overlap.runtime_owner == pack:
+                stats[pack]["runtime_wins"] += 1
+            else:
+                stats[pack]["other_owner"] += 1
+            if overlap.workflow_files:
+                stats[pack]["workflow_used"] += 1
+    return stats
 
 
 def json_report(
@@ -439,14 +409,15 @@ def json_report(
     matched: dict[ManagerEntry, str],
     ambiguous: dict[str, list[ManagerEntry]],
     pack_nodes: dict[str, set[str]],
-    conflicts: list[Conflict],
-    global_conflict_counts: dict[str, int],
+    overlaps: list[Overlap],
+    active_usage: dict[str, set[str]],
     workflow_errors: list[tuple[str, str]],
 ) -> dict[str, Any]:
-    installed_counts = installed_conflict_counts(conflicts)
-    workflow_counts = workflow_conflict_counts(conflicts)
-    matched_packs = set(matched.values())
     installed_set = set(installed)
+    matched_packs = set(matched.values())
+    runtime_packs = {pack for pack in pack_nodes if pack in installed_set}
+    pack_used_nodes, pack_workflows = pack_workflow_usage(pack_nodes, active_usage)
+    stats = pack_overlap_stats(installed, overlaps)
 
     return {
         "sources": {
@@ -458,12 +429,16 @@ def json_report(
         "summary": {
             "installed_packs": len(installed),
             "manager_matched_packs": len(matched_packs),
-            "runtime_registered_packs": len(
-                {pack for pack in pack_nodes if pack in installed_set}
+            "runtime_registered_packs": len(runtime_packs),
+            "manager_known_installed_overlap_node_ids": len(overlaps),
+            "runtime_registered_overlap_node_ids": sum(
+                1 for overlap in overlaps if overlap.runtime_owner is not None
             ),
-            "installed_conflict_node_ids": len(conflicts),
-            "workflow_used_conflict_node_ids": sum(
-                1 for conflict in conflicts if conflict.workflow_files
+            "unregistered_overlap_node_ids": sum(
+                1 for overlap in overlaps if overlap.runtime_owner is None
+            ),
+            "workflow_used_overlap_node_ids": sum(
+                1 for overlap in overlaps if overlap.workflow_files
             ),
             "workflow_errors": len(workflow_errors),
         },
@@ -472,30 +447,29 @@ def json_report(
                 "name": pack,
                 "manager_matched": pack in matched_packs,
                 "runtime_registered_nodes": len(pack_nodes.get(pack, set())),
-                "known_global_conflict_nodes": global_conflict_counts.get(pack, 0),
-                "installed_conflict_nodes": installed_counts.get(pack, 0),
-                "workflow_used_conflict_nodes": workflow_counts.get(pack, 0),
+                "workflow_used_runtime_nodes": len(pack_used_nodes.get(pack, set())),
+                "workflow_files_using_runtime_nodes": len(
+                    pack_workflows.get(pack, set())
+                ),
+                **stats[pack],
             }
             for pack in installed
         ],
-        "conflicts": [
+        "overlaps": [
             {
-                "node_id": conflict.node_id,
-                "installed_packs": list(conflict.installed_packs),
-                "runtime_owner": conflict.runtime_owner,
-                "workflow_count": len(conflict.workflow_files),
-                "workflow_files": list(conflict.workflow_files),
-                "inactive_workflow_count": len(conflict.inactive_workflow_files),
-                "inactive_workflow_files": list(conflict.inactive_workflow_files),
+                "node_id": overlap.node_id,
+                "installed_manager_claimants": list(overlap.installed_claimants),
+                "runtime_owner": overlap.runtime_owner,
+                "workflow_count": len(overlap.workflow_files),
+                "workflow_files": list(overlap.workflow_files),
+                "inactive_workflow_count": len(overlap.inactive_workflow_files),
+                "inactive_workflow_files": list(overlap.inactive_workflow_files),
             }
-            for conflict in conflicts
+            for overlap in overlaps
         ],
         "ambiguous_manager_matches": {
-            pack: [
-                {"title": entry.title, "repo": entry.repo}
-                for entry in entries
-            ]
-            for pack, entries in ambiguous.items()
+            pack: [{"title": entry.title, "repo": entry.repo} for entry in pack_entries]
+            for pack, pack_entries in ambiguous.items()
         },
         "workflow_errors": [
             {"file": filename, "error": error}
@@ -513,15 +487,16 @@ def print_human_report(
     matched: dict[ManagerEntry, str],
     ambiguous: dict[str, list[ManagerEntry]],
     pack_nodes: dict[str, set[str]],
-    conflicts: list[Conflict],
-    global_conflict_counts: dict[str, int],
+    overlaps: list[Overlap],
+    active_usage: dict[str, set[str]],
     workflow_errors: list[tuple[str, str]],
+    only_used_overlaps: bool,
 ) -> None:
     installed_set = set(installed)
     matched_packs = set(matched.values())
     runtime_packs = {pack for pack in pack_nodes if pack in installed_set}
-    installed_counts = installed_conflict_counts(conflicts)
-    workflow_counts = workflow_conflict_counts(conflicts)
+    pack_used_nodes, pack_workflows = pack_workflow_usage(pack_nodes, active_usage)
+    stats = pack_overlap_stats(installed, overlaps)
 
     print(f"Custom nodes: {custom_nodes}")
     print(f"Manager map: {manager_map}")
@@ -530,53 +505,72 @@ def print_human_report(
         print(f"Workflows: {workflow_root}")
 
     print("\n=== Summary ===")
-    print(f"Installed node-pack directories: {len(installed)}")
-    print(f"Matched to Manager node map:     {len(matched_packs)}")
-    print(f"Runtime-registered node packs:   {len(runtime_packs)}")
-    print(f"Installed conflict node IDs:     {len(conflicts)}")
+    print(f"Installed node-pack directories:       {len(installed)}")
+    print(f"Matched to Manager node map:           {len(matched_packs)}")
+    print(f"Runtime-registered node packs:         {len(runtime_packs)}")
+    print(f"Manager-known installed overlap IDs:   {len(overlaps)}")
+    print(
+        "Runtime-registered overlap IDs:       "
+        f"{sum(1 for overlap in overlaps if overlap.runtime_owner is not None)}"
+    )
+    print(
+        "Unregistered Manager overlap IDs:     "
+        f"{sum(1 for overlap in overlaps if overlap.runtime_owner is None)}"
+    )
     if workflow_root is not None:
         print(
-            "Workflow-used conflict node IDs: "
-            f"{sum(1 for conflict in conflicts if conflict.workflow_files)}"
+            "Workflow-used overlap IDs:           "
+            f"{sum(1 for overlap in overlaps if overlap.workflow_files)}"
         )
-        print(f"Unreadable workflow files:       {len(workflow_errors)}")
+        print(f"Unreadable workflow files:             {len(workflow_errors)}")
 
     print("\n=== Installed pack summary ===")
     for pack in installed:
-        runtime_count = len(pack_nodes.get(pack, set()))
-        manager_state = "yes" if pack in matched_packs else "no"
         print(pack)
-        print(f"  Manager map match:          {manager_state}")
-        print(f"  Runtime registered nodes:   {runtime_count}")
-        print(f"  Known global conflicts:     {global_conflict_counts.get(pack, 0)}")
-        print(f"  Installed conflicts:        {installed_counts.get(pack, 0)}")
+        print(f"  Manager map match:                  {'yes' if pack in matched_packs else 'no'}")
+        print(f"  Runtime registered nodes:           {len(pack_nodes.get(pack, set()))}")
         if workflow_root is not None:
-            print(
-                "  Workflow-used conflicts:    "
-                f"{workflow_counts.get(pack, 0)}"
-            )
+            print(f"  Workflow-used runtime nodes:        {len(pack_used_nodes.get(pack, set()))}")
+            print(f"  Workflow files using runtime nodes: {len(pack_workflows.get(pack, set()))}")
+        print(f"  Manager overlaps with installed:    {stats[pack]['manager_overlaps']}")
+        print(f"  Current runtime owner wins:         {stats[pack]['runtime_wins']}")
+        print(f"  Current owner is another pack:      {stats[pack]['other_owner']}")
+        print(f"  Overlap IDs currently unregistered: {stats[pack]['unregistered']}")
+        if workflow_root is not None:
+            print(f"  Workflow-used overlap IDs:          {stats[pack]['workflow_used']}")
 
-    print("\n=== Installed node-ID conflicts ===")
-    if not conflicts:
-        print("No Manager-known node-ID conflicts were found between installed packs.")
+    print("\n=== Manager-known overlaps between installed packs ===")
+    selected = (
+        [overlap for overlap in overlaps if overlap.workflow_files]
+        if only_used_overlaps
+        else overlaps
+    )
+    if not selected:
+        if only_used_overlaps:
+            print("No active saved workflows use a Manager-known installed overlap.")
+        else:
+            print("No Manager-known node-ID overlaps were found between installed packs.")
     else:
-        for conflict in conflicts:
-            print(f"\n{conflict.node_id}")
-            print(f"  Installed claimants: {', '.join(conflict.installed_packs)}")
+        for overlap in selected:
+            print(f"\n{overlap.node_id}")
+            print(
+                "  Installed Manager claimants: "
+                f"{', '.join(overlap.installed_claimants)}"
+            )
             print(
                 "  Runtime owner: "
-                f"{conflict.runtime_owner or 'not registered / unknown'}"
+                f"{overlap.runtime_owner if overlap.runtime_owner else 'not registered'}"
             )
             if workflow_root is not None:
-                print(f"  Active workflow count: {len(conflict.workflow_files)}")
-                for filename in conflict.workflow_files:
+                print(f"  Active workflow count: {len(overlap.workflow_files)}")
+                for filename in overlap.workflow_files:
                     print(f"    - {filename}")
-                if conflict.inactive_workflow_files:
+                if overlap.inactive_workflow_files:
                     print(
                         "  Muted/bypassed-only workflow count: "
-                        f"{len(conflict.inactive_workflow_files)}"
+                        f"{len(overlap.inactive_workflow_files)}"
                     )
-                    for filename in conflict.inactive_workflow_files:
+                    for filename in overlap.inactive_workflow_files:
                         print(f"    - {filename}")
 
     if ambiguous:
@@ -591,9 +585,18 @@ def print_human_report(
         for filename, error in workflow_errors:
             print(f"{filename}: {error}")
 
+    print("\nNote: Manager overlap data comes from static analysis and is advisory.")
+    print(
+        "A Manager-known overlap does not by itself prove that both packs register "
+        "the node at runtime."
+    )
+
 
 def main() -> int:
     args = parse_args()
+    if args.only_used_overlaps and args.workflows is None:
+        print("ERROR: --only-used-overlaps requires --workflows", file=sys.stderr)
+        return 1
 
     try:
         custom_nodes, manager_map, url, workflow_root = default_paths(args)
@@ -609,8 +612,7 @@ def main() -> int:
         if workflow_root is not None:
             active_usage, inactive_usage, workflow_errors = workflow_usage(workflow_root)
 
-        conflicts, global_conflict_counts = build_conflicts(
-            entries,
+        overlaps = build_overlaps(
             matched,
             runtime_owners,
             active_usage,
@@ -630,8 +632,8 @@ def main() -> int:
             matched,
             ambiguous,
             pack_nodes,
-            conflicts,
-            global_conflict_counts,
+            overlaps,
+            active_usage,
             workflow_errors,
         )
         print(json.dumps(report, indent=2, sort_keys=True))
@@ -645,11 +647,11 @@ def main() -> int:
             matched,
             ambiguous,
             pack_nodes,
-            conflicts,
-            global_conflict_counts,
+            overlaps,
+            active_usage,
             workflow_errors,
+            args.only_used_overlaps,
         )
-
     return 0
 
 
