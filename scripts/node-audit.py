@@ -1,27 +1,18 @@
 #!/usr/bin/env python3
-"""Audit installed ComfyUI node packs for node-ID collisions and workflow impact.
-
-Terminology
------------
-ComfyUI workflows refer to backend node classes by a string node ID. On the
-backend, custom-node packs register those IDs through NODE_CLASS_MAPPINGS.
-
-ComfyUI Manager's extension-node-map.json is built from static analysis of node
-pack source code. If Manager associates the same node ID with more than one
-locally installed pack, this script calls that a "potential node-ID collision".
-
-A potential collision is advisory. It does not prove that both packs currently
-register the ID or that anything is broken. The running ComfyUI /object_info
-endpoint is used to show which pack currently provides each node ID.
+"""Audit ComfyUI node-pack availability, workflow dependencies, and ID collisions.
 
 The default report is decision-oriented:
-1. high-level numerical overview;
-2. plain-language summary by installed pack group;
-3. a narrow terminal-friendly table of workflow-used collision IDs;
-4. detailed vertical records only for items that need attention;
-5. cleanup-review candidates.
 
-Use --verbose for technical per-pack statistics and every potential collision.
+1. Which node types used by saved workflows are missing from the running ComfyUI?
+2. Which node pack does the workflow itself say each missing node came from?
+3. Are those intended packs installed now?
+4. Which installed packs are associated by Manager with the same NODE_CLASS_MAPPINGS key?
+5. Which currently running packs appear unused by the saved workflows scanned?
+
+ComfyUI Manager's extension-node-map.json is advisory static-analysis metadata.
+Workflow-embedded ``properties.cnr_id`` and ``properties.ver`` are preferred when
+identifying the pack/version a saved workflow expected. The running /object_info
+registry is authoritative for whether a backend node ID is currently available.
 """
 
 from __future__ import annotations
@@ -34,10 +25,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import defaultdict
-from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 FRONTEND_ONLY_NODE_TYPES = {"Note", "PrimitiveNode", "Reroute"}
 INACTIVE_NODE_MODES = {2, 4}
@@ -51,29 +41,47 @@ class ManagerEntry:
 
 
 @dataclass(frozen=True)
+class NodeOccurrence:
+    workflow: str
+    workflow_node_id: str
+    node_type: str
+    title: str | None
+    mode: int
+    cnr_id: str | None
+    version: str | None
+
+
+@dataclass(frozen=True)
 class Collision:
     node_id: str
     installed_packs: tuple[str, ...]
     current_provider: str | None
     workflow_files: tuple[str, ...]
-    inactive_workflow_files: tuple[str, ...]
 
 
 @dataclass(frozen=True)
-class PairSummary:
+class CollisionGroup:
+    label: str
     packs: tuple[str, ...]
-    collision_count: int
-    used_count: int
-    available_used_count: int
-    missing_used_count: int
-    provider_counts: tuple[tuple[str, int], ...]
+    collisions: tuple[Collision, ...]
+
+
+@dataclass(frozen=True)
+class MissingDependency:
+    key: str
+    display_pack: str
+    installed_pack: str | None
+    node_types: tuple[str, ...]
+    workflows: tuple[str, ...]
+    occurrences: tuple[NodeOccurrence, ...]
+    manager_candidates: tuple[str, ...]
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Audit installed ComfyUI node packs for potential node-ID collisions, "
-            "current runtime providers, and optional saved-workflow usage."
+            "Audit ComfyUI workflow dependencies, missing nodes, potential node-ID "
+            "collisions, and saved-workflow usage."
         )
     )
     parser.add_argument(
@@ -110,16 +118,26 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--workflow",
+        action="append",
+        default=[],
+        metavar="FILE",
+        help=(
+            "inspect only this workflow file; may be repeated. Implies --workflows "
+            "using COMFYUI_WORKFLOWS_PATH or ./workflows when --workflows is omitted"
+        ),
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
-        help="show technical per-pack statistics and every potential node-ID collision",
+        help="show source paths, technical per-pack statistics, and all potential collisions",
     )
     parser.add_argument(
         "--only-used-overlaps",
         action="store_true",
         help=(
-            "compatibility option: with --workflows --verbose, limit verbose "
-            "collision details to node IDs used by active saved workflows"
+            "compatibility alias: with --verbose, limit collision details to IDs used "
+            "by the scanned workflows"
         ),
     )
     parser.add_argument(
@@ -138,7 +156,6 @@ def env_values(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     if not path.is_file():
         return values
-
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -148,7 +165,6 @@ def env_values(path: Path) -> dict[str, str]:
         if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
             value = value[1:-1]
         values[key.strip()] = value
-
     return values
 
 
@@ -189,13 +205,13 @@ def default_paths(args: argparse.Namespace) -> tuple[Path, Path, str, Path | Non
     url = args.url or f"http://127.0.0.1:{port}/object_info"
 
     workflow_root: Path | None = None
-    if args.workflows is not None:
-        if args.workflows == "__ENV__":
+    if args.workflows is not None or args.workflow:
+        if args.workflows and args.workflows != "__ENV__":
+            workflow_root = resolve_host_path(args.workflows, Path.cwd())
+        else:
             workflow_root = resolve_host_path(
                 env.get("COMFYUI_WORKFLOWS_PATH", "./workflows"), root
             )
-        else:
-            workflow_root = resolve_host_path(args.workflows, Path.cwd())
 
     return custom_nodes, manager_map, url, workflow_root
 
@@ -214,7 +230,6 @@ def repo_basename(repo: str) -> str:
 def installed_pack_names(custom_nodes: Path) -> list[str]:
     if not custom_nodes.is_dir():
         raise RuntimeError(f"custom_nodes directory not found: {custom_nodes}")
-
     return sorted(
         (
             path.name
@@ -230,7 +245,6 @@ def load_manager_entries(path: Path) -> list[ManagerEntry]:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"could not read Manager node map {path}: {exc}") from exc
-
     if not isinstance(payload, dict):
         raise RuntimeError(f"unexpected Manager node-map structure in {path}")
 
@@ -238,51 +252,16 @@ def load_manager_entries(path: Path) -> list[ManagerEntry]:
     for repo, value in payload.items():
         if not isinstance(repo, str) or not isinstance(value, list) or not value:
             continue
-
         node_ids = value[0]
         metadata = value[1] if len(value) > 1 and isinstance(value[1], dict) else {}
         if not isinstance(node_ids, list):
             continue
-
-        clean_node_ids = tuple(
-            node_id for node_id in node_ids if isinstance(node_id, str)
-        )
+        clean_node_ids = tuple(node for node in node_ids if isinstance(node, str))
         title = metadata.get("title_aux")
         if not isinstance(title, str) or not title.strip():
             title = repo_basename(repo)
-
         entries.append(ManagerEntry(repo=repo, title=title, node_ids=clean_node_ids))
-
     return entries
-
-
-def match_entries_to_installed(
-    entries: list[ManagerEntry],
-    installed: list[str],
-) -> tuple[dict[ManagerEntry, str], dict[str, list[ManagerEntry]]]:
-    by_normalized: dict[str, list[str]] = defaultdict(list)
-    for pack in installed:
-        by_normalized[normalize_pack_name(pack)].append(pack)
-
-    matched: dict[ManagerEntry, str] = {}
-    ambiguous: dict[str, list[ManagerEntry]] = defaultdict(list)
-
-    for entry in entries:
-        aliases = {
-            normalize_pack_name(repo_basename(entry.repo)),
-            normalize_pack_name(entry.title),
-        }
-        candidates: set[str] = set()
-        for alias in aliases:
-            candidates.update(by_normalized.get(alias, []))
-
-        if len(candidates) == 1:
-            matched[entry] = next(iter(candidates))
-        elif len(candidates) > 1:
-            for candidate in sorted(candidates, key=str.casefold):
-                ambiguous[candidate].append(entry)
-
-    return matched, ambiguous
 
 
 def load_object_info(url: str) -> dict[str, dict[str, Any]]:
@@ -291,10 +270,8 @@ def load_object_info(url: str) -> dict[str, dict[str, Any]]:
             payload = json.load(response)
     except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"could not read {url}: {exc}") from exc
-
     if not isinstance(payload, dict):
         raise RuntimeError(f"unexpected object_info response from {url}")
-
     return {
         node_id: info
         for node_id, info in payload.items()
@@ -312,45 +289,116 @@ def runtime_pack_from_module(module: Any) -> str | None:
 def runtime_node_owners(
     object_info: dict[str, dict[str, Any]],
 ) -> tuple[dict[str, str], dict[str, set[str]]]:
-    node_owner: dict[str, str] = {}
+    owners: dict[str, str] = {}
     pack_nodes: dict[str, set[str]] = defaultdict(set)
-
     for node_id, info in object_info.items():
         pack = runtime_pack_from_module(info.get("python_module"))
         if pack is None:
             continue
-        node_owner[node_id] = pack
+        owners[node_id] = pack
         pack_nodes[pack].add(node_id)
-
-    return node_owner, pack_nodes
-
-
-def iter_nodes(value: Any) -> Iterator[dict[str, Any]]:
-    """Yield UI workflow node records, including nested/subgraph node lists."""
-    if isinstance(value, dict):
-        nodes = value.get("nodes")
-        if isinstance(nodes, list):
-            for node in nodes:
-                if isinstance(node, dict) and isinstance(node.get("type"), str):
-                    yield node
-        for child in value.values():
-            yield from iter_nodes(child)
-    elif isinstance(value, list):
-        for child in value:
-            yield from iter_nodes(child)
+    return owners, pack_nodes
 
 
-def workflow_usage(
-    root: Path,
-) -> tuple[dict[str, set[str]], dict[str, set[str]], list[tuple[str, str]]]:
+def manager_candidates_by_node(entries: Iterable[ManagerEntry]) -> dict[str, list[ManagerEntry]]:
+    result: dict[str, list[ManagerEntry]] = defaultdict(list)
+    for entry in entries:
+        for node_id in entry.node_ids:
+            result[node_id].append(entry)
+    return result
+
+
+def match_manager_entries_to_installed(
+    entries: Iterable[ManagerEntry], installed: Iterable[str]
+) -> dict[ManagerEntry, str]:
+    installed_list = list(installed)
+    by_normalized: dict[str, list[str]] = defaultdict(list)
+    for pack in installed_list:
+        by_normalized[normalize_pack_name(pack)].append(pack)
+
+    matched: dict[ManagerEntry, str] = {}
+    for entry in entries:
+        aliases = {
+            normalize_pack_name(repo_basename(entry.repo)),
+            normalize_pack_name(entry.title),
+        }
+        candidates: set[str] = set()
+        for alias in aliases:
+            candidates.update(by_normalized.get(alias, []))
+        if len(candidates) == 1:
+            matched[entry] = next(iter(candidates))
+    return matched
+
+
+def workflow_paths(root: Path, selected: list[str]) -> list[Path]:
     if not root.is_dir():
         raise RuntimeError(f"workflow directory not found: {root}")
+    if not selected:
+        return sorted(root.rglob("*.json"))
 
-    active: dict[str, set[str]] = defaultdict(set)
-    inactive: dict[str, set[str]] = defaultdict(set)
+    resolved: list[Path] = []
+    for name in selected:
+        direct = (root / name).resolve(strict=False)
+        if direct.is_file():
+            resolved.append(direct)
+            continue
+        matches = [path for path in root.rglob("*.json") if path.name == Path(name).name]
+        if not matches:
+            raise RuntimeError(f"workflow file not found under {root}: {name}")
+        if len(matches) > 1:
+            choices = ", ".join(str(path.relative_to(root)) for path in matches)
+            raise RuntimeError(f"workflow name is ambiguous: {name}; matches: {choices}")
+        resolved.append(matches[0])
+    return sorted(set(resolved))
+
+
+def workflow_node_dicts(data: Any) -> Iterable[dict[str, Any]]:
+    """Yield executable nodes from the primary workflow graph only.
+
+    For normal UI workflow JSON, only the top-level ``nodes`` list is inspected.
+    This intentionally avoids recursively treating embedded templates, metadata,
+    or subdocuments as additional live nodes.
+    """
+    if isinstance(data, dict) and isinstance(data.get("nodes"), list):
+        for node in data["nodes"]:
+            if isinstance(node, dict) and isinstance(node.get("type"), str):
+                yield node
+        return
+
+    if isinstance(data, dict):
+        for node_id, value in data.items():
+            if not isinstance(value, dict):
+                continue
+            class_type = value.get("class_type")
+            if isinstance(class_type, str):
+                yield {
+                    "id": node_id,
+                    "type": class_type,
+                    "mode": 0,
+                    "properties": value.get("properties", {}),
+                }
+
+
+def clean_optional_string(value: Any) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def scan_workflows(
+    root: Path,
+    paths: list[Path],
+    registered: set[str],
+) -> tuple[
+    dict[str, set[str]],
+    dict[str, list[NodeOccurrence]],
+    dict[str, list[NodeOccurrence]],
+    list[tuple[str, str]],
+]:
+    active_usage: dict[str, set[str]] = defaultdict(set)
+    active_occurrences: dict[str, list[NodeOccurrence]] = defaultdict(list)
+    missing_occurrences: dict[str, list[NodeOccurrence]] = defaultdict(list)
     errors: list[tuple[str, str]] = []
 
-    for path in sorted(root.rglob("*.json")):
+    for path in paths:
         relative = str(path.relative_to(root))
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -358,40 +406,131 @@ def workflow_usage(
             errors.append((relative, str(exc)))
             continue
 
-        active_in_file: set[str] = set()
-        inactive_in_file: set[str] = set()
-
-        for node in iter_nodes(data):
-            node_type = node["type"]
-            if node_type in FRONTEND_ONLY_NODE_TYPES:
+        for node in workflow_node_dicts(data):
+            node_type = node.get("type")
+            if not isinstance(node_type, str) or node_type in FRONTEND_ONLY_NODE_TYPES:
                 continue
             mode = node.get("mode", 0)
+            if not isinstance(mode, int):
+                mode = 0
             if mode in INACTIVE_NODE_MODES:
-                inactive_in_file.add(node_type)
-            else:
-                active_in_file.add(node_type)
+                continue
 
-        for node_type in active_in_file:
-            active[node_type].add(relative)
-        for node_type in inactive_in_file - active_in_file:
-            inactive[node_type].add(relative)
+            properties = node.get("properties")
+            if not isinstance(properties, dict):
+                properties = {}
 
-    return active, inactive, errors
+            occurrence = NodeOccurrence(
+                workflow=relative,
+                workflow_node_id=str(node.get("id", "?")),
+                node_type=node_type,
+                title=clean_optional_string(node.get("title")),
+                mode=mode,
+                cnr_id=clean_optional_string(properties.get("cnr_id")),
+                version=clean_optional_string(properties.get("ver")),
+            )
+            active_usage[node_type].add(relative)
+            active_occurrences[node_type].append(occurrence)
+            if node_type not in registered:
+                missing_occurrences[node_type].append(occurrence)
+
+    return active_usage, active_occurrences, missing_occurrences, errors
+
+
+def find_installed_pack(pack_id: str, installed: Iterable[str]) -> str | None:
+    target = normalize_pack_name(pack_id)
+    matches = [pack for pack in installed if normalize_pack_name(pack) == target]
+    return matches[0] if len(matches) == 1 else None
+
+
+def manager_candidate_names(entries: Iterable[ManagerEntry]) -> tuple[str, ...]:
+    values: set[str] = set()
+    for entry in entries:
+        values.add(entry.title)
+    return tuple(sorted(values, key=str.casefold))
+
+
+def build_missing_dependencies(
+    missing_occurrences: dict[str, list[NodeOccurrence]],
+    manager_by_node: dict[str, list[ManagerEntry]],
+    installed: list[str],
+) -> list[MissingDependency]:
+    grouped: dict[str, list[NodeOccurrence]] = defaultdict(list)
+    group_display: dict[str, str] = {}
+
+    for node_type, occurrences in missing_occurrences.items():
+        cnr_ids = sorted(
+            {occ.cnr_id for occ in occurrences if occ.cnr_id}, key=str.casefold
+        )
+        if cnr_ids:
+            for cnr_id in cnr_ids:
+                key = f"cnr:{cnr_id}"
+                group_display[key] = cnr_id
+                grouped[key].extend(occ for occ in occurrences if occ.cnr_id == cnr_id)
+            unknown = [occ for occ in occurrences if not occ.cnr_id]
+            if unknown:
+                key = f"unknown:{node_type}"
+                group_display[key] = "UNKNOWN"
+                grouped[key].extend(unknown)
+        else:
+            key = f"unknown:{node_type}"
+            group_display[key] = "UNKNOWN"
+            grouped[key].extend(occurrences)
+
+    dependencies: list[MissingDependency] = []
+    for key, occurrences in grouped.items():
+        node_types = tuple(sorted({occ.node_type for occ in occurrences}, key=str.casefold))
+        workflows = tuple(sorted({occ.workflow for occ in occurrences}))
+        display_pack = group_display[key]
+        installed_pack = (
+            find_installed_pack(display_pack, installed) if display_pack != "UNKNOWN" else None
+        )
+        manager_entries: list[ManagerEntry] = []
+        for node_type in node_types:
+            manager_entries.extend(manager_by_node.get(node_type, []))
+        dependencies.append(
+            MissingDependency(
+                key=key,
+                display_pack=display_pack,
+                installed_pack=installed_pack,
+                node_types=node_types,
+                workflows=workflows,
+                occurrences=tuple(
+                    sorted(
+                        occurrences,
+                        key=lambda occ: (
+                            occ.workflow.casefold(),
+                            occ.node_type.casefold(),
+                            occ.workflow_node_id,
+                        ),
+                    )
+                ),
+                manager_candidates=manager_candidate_names(manager_entries),
+            )
+        )
+
+    return sorted(
+        dependencies,
+        key=lambda dep: (
+            dep.display_pack == "UNKNOWN",
+            dep.display_pack.casefold(),
+            dep.node_types,
+        ),
+    )
 
 
 def build_collisions(
-    matched: dict[ManagerEntry, str],
+    matched_entries: dict[ManagerEntry, str],
     current_providers: dict[str, str],
     active_usage: dict[str, set[str]],
-    inactive_usage: dict[str, set[str]],
 ) -> list[Collision]:
-    installed_claimants: dict[str, set[str]] = defaultdict(set)
-    for entry, installed_pack in matched.items():
+    claimants: dict[str, set[str]] = defaultdict(set)
+    for entry, pack in matched_entries.items():
         for node_id in entry.node_ids:
-            installed_claimants[node_id].add(installed_pack)
+            claimants[node_id].add(pack)
 
     collisions: list[Collision] = []
-    for node_id, packs in installed_claimants.items():
+    for node_id, packs in claimants.items():
         if len(packs) < 2:
             continue
         collisions.append(
@@ -400,432 +539,237 @@ def build_collisions(
                 installed_packs=tuple(sorted(packs, key=str.casefold)),
                 current_provider=current_providers.get(node_id),
                 workflow_files=tuple(sorted(active_usage.get(node_id, set()))),
-                inactive_workflow_files=tuple(
-                    sorted(inactive_usage.get(node_id, set()))
-                ),
             )
         )
-
     return sorted(collisions, key=lambda item: item.node_id.casefold())
 
 
-def pack_workflow_usage(
-    pack_nodes: dict[str, set[str]],
-    active_usage: dict[str, set[str]],
-) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
-    pack_used_nodes: dict[str, set[str]] = defaultdict(set)
-    pack_workflows: dict[str, set[str]] = defaultdict(set)
+def collision_groups(collisions: list[Collision]) -> list[CollisionGroup]:
+    grouped: dict[tuple[str, ...], list[Collision]] = defaultdict(list)
+    for collision in collisions:
+        grouped[collision.installed_packs].append(collision)
 
+    groups: list[CollisionGroup] = []
+    for index, (packs, items) in enumerate(
+        sorted(grouped.items(), key=lambda pair: tuple(p.casefold() for p in pair[0]))
+    ):
+        label = chr(ord("A") + index) if index < 26 else str(index + 1)
+        groups.append(CollisionGroup(label=label, packs=packs, collisions=tuple(items)))
+    return groups
+
+
+def pack_workflow_usage(
+    pack_nodes: dict[str, set[str]], active_usage: dict[str, set[str]]
+) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    used_nodes: dict[str, set[str]] = defaultdict(set)
+    workflows: dict[str, set[str]] = defaultdict(set)
     for pack, nodes in pack_nodes.items():
         for node_id in nodes:
             files = active_usage.get(node_id, set())
             if files:
-                pack_used_nodes[pack].add(node_id)
-                pack_workflows[pack].update(files)
-
-    return pack_used_nodes, pack_workflows
-
-
-def pair_summaries(collisions: list[Collision]) -> list[PairSummary]:
-    grouped: dict[tuple[str, ...], list[Collision]] = defaultdict(list)
-    for item in collisions:
-        grouped[item.installed_packs].append(item)
-
-    summaries: list[PairSummary] = []
-    for packs, items in grouped.items():
-        used = [item for item in items if item.workflow_files]
-        provider_counts: dict[str, int] = defaultdict(int)
-        for item in used:
-            if item.current_provider is not None:
-                provider_counts[item.current_provider] += 1
-
-        summaries.append(
-            PairSummary(
-                packs=packs,
-                collision_count=len(items),
-                used_count=len(used),
-                available_used_count=sum(
-                    1 for item in used if item.current_provider is not None
-                ),
-                missing_used_count=sum(
-                    1 for item in used if item.current_provider is None
-                ),
-                provider_counts=tuple(
-                    sorted(provider_counts.items(), key=lambda pair: pair[0].casefold())
-                ),
-            )
-        )
-
-    return sorted(summaries, key=lambda item: tuple(p.casefold() for p in item.packs))
+                used_nodes[pack].add(node_id)
+                workflows[pack].update(files)
+    return used_nodes, workflows
 
 
-def technical_pack_stats(
+def print_overview(
     installed: list[str],
-    collisions: list[Collision],
-) -> dict[str, dict[str, int]]:
-    stats = {
-        pack: {
-            "potential_collisions": 0,
-            "provides": 0,
-            "other_provider": 0,
-            "unregistered": 0,
-            "workflow_used_collisions": 0,
-        }
-        for pack in installed
-    }
-
-    for item in collisions:
-        for pack in item.installed_packs:
-            if pack not in stats:
-                continue
-            stats[pack]["potential_collisions"] += 1
-            if item.current_provider is None:
-                stats[pack]["unregistered"] += 1
-            elif item.current_provider == pack:
-                stats[pack]["provides"] += 1
-            else:
-                stats[pack]["other_provider"] += 1
-            if item.workflow_files:
-                stats[pack]["workflow_used_collisions"] += 1
-
-    return stats
-
-
-def print_table(headers: tuple[str, ...], rows: list[tuple[str, ...]]) -> None:
-    """Print a compact table. Keep wide free-text fields out of these tables."""
-    if not rows:
-        return
-
-    widths = [len(value) for value in headers]
-    for row in rows:
-        for index, value in enumerate(row):
-            widths[index] = max(widths[index], len(value))
-
-    print("  ".join(value.ljust(widths[i]) for i, value in enumerate(headers)))
-    print("  ".join("-" * width for width in widths))
-    for row in rows:
-        print("  ".join(value.ljust(widths[i]) for i, value in enumerate(row)))
-
-
-def collision_status(item: Collision) -> str:
-    return "PROBLEM" if item.current_provider is None else "OK"
-
-
-def provider_risk_text(item: Collision) -> str:
-    if item.current_provider is None:
-        return (
-            "The workflow references this exact node ID, but the running ComfyUI "
-            "does not currently have any backend node registered under that ID. "
-            "Those workflows cannot execute that node as saved."
-        )
-    return (
-        f"The workflow currently resolves this node ID to {item.current_provider}. "
-        "Manager also associates the same ID with another installed pack, so this is "
-        "a potential collision, but there is no evidence of a runtime failure right now."
-    )
-
-
-def print_pair_legend(pairs: list[PairSummary]) -> dict[tuple[str, ...], str]:
-    labels: dict[tuple[str, ...], str] = {}
-    if not pairs:
-        return labels
-
-    print("\n=== Installed pack groups with potential node-ID collisions ===")
-    for index, pair in enumerate(pairs, start=1):
-        label = chr(ord("A") + index - 1) if index <= 26 else str(index)
-        labels[pair.packs] = label
-        print(f"Group {label}")
-        for pack in pair.packs:
-            print(f"  - {pack}")
-        print(f"  Potential collision IDs: {pair.collision_count}")
-        if pair.used_count:
-            print(f"  Used by saved workflows:  {pair.used_count}")
-        else:
-            print("  Used by saved workflows:  0")
-    return labels
-
-
-def print_plain_report(
-    installed: list[str],
-    matched: dict[ManagerEntry, str],
     pack_nodes: dict[str, set[str]],
-    collisions: list[Collision],
+    workflow_count: int,
     active_usage: dict[str, set[str]],
-    workflow_root: Path | None,
+    missing_occurrences: dict[str, list[NodeOccurrence]],
+    missing_dependencies: list[MissingDependency],
+    collisions: list[Collision],
     workflow_errors: list[tuple[str, str]],
 ) -> None:
     installed_set = set(installed)
-    matched_packs = set(matched.values())
     running_packs = {pack for pack in pack_nodes if pack in installed_set}
-    pack_used_nodes, pack_workflows = pack_workflow_usage(pack_nodes, active_usage)
-    pairs = pair_summaries(collisions)
-
     used_collisions = [item for item in collisions if item.workflow_files]
-    available_used = [
-        item for item in used_collisions if item.current_provider is not None
-    ]
-    missing_used = [
-        item for item in used_collisions if item.current_provider is None
-    ]
-
-    cleanup_candidates = [
-        pack
-        for pack in installed
-        if len(pack_nodes.get(pack, set())) > 0
-        and len(pack_used_nodes.get(pack, set())) == 0
-    ]
+    missing_instances = sum(len(items) for items in missing_occurrences.values())
+    known_missing_packs = {
+        dep.display_pack for dep in missing_dependencies if dep.display_pack != "UNKNOWN"
+    }
 
     print("=== ComfyUI node-pack audit ===")
-    print(f"Installed node packs:                       {len(installed)}")
-    print(f"Running node packs detected:                {len(running_packs)}")
-    print(f"Pack groups with potential collisions:      {len(pairs)}")
-    print(f"Potential node-ID collisions:               {len(collisions)}")
-    if workflow_root is not None:
-        print(f"Collision IDs used by saved workflows:      {len(used_collisions)}")
-        print(f"  Available now:                            {len(available_used)}")
-        print(f"  Missing now:                              {len(missing_used)}")
-        print(f"Packs with no saved-workflow use found:     {len(cleanup_candidates)}")
-        print(f"Unreadable workflow files:                  {len(workflow_errors)}")
+    print(f"Installed node packs:                    {len(installed)}")
+    print(f"Running node packs detected:             {len(running_packs)}")
+    print(f"Saved workflows scanned:                 {workflow_count}")
+    print(f"Distinct active node types used:         {len(active_usage)}")
+    print(f"Missing active node types:               {len(missing_occurrences)}")
+    print(f"Missing active node instances:           {missing_instances}")
+    print(f"Intended missing pack IDs found:         {len(known_missing_packs)}")
+    print(f"Potential installed node-ID collisions:  {len(collisions)}")
+    print(f"Collision IDs used by saved workflows:   {len(used_collisions)}")
+    print(f"Unreadable workflow files:               {len(workflow_errors)}")
 
-    print("\nWhat 'potential collision' means:")
-    print(
-        "  Manager associates the same ComfyUI node ID (the NODE_CLASS_MAPPINGS key "
-        "stored in workflows) with more than one installed pack."
-    )
-    print(
-        "  It does NOT mean the packs contain the same exact implementation, and it "
-        "does NOT prove both packs are actively registering the node right now."
-    )
 
+def print_plain_summary(
+    missing_occurrences: dict[str, list[NodeOccurrence]],
+    missing_dependencies: list[MissingDependency],
+    collisions: list[Collision],
+) -> None:
+    used_collisions = [item for item in collisions if item.workflow_files]
     print("\n=== Summary ===")
-    if not collisions:
-        print("- OK: No potential node-ID collisions were found between installed packs.")
+    if missing_occurrences:
+        workflows = {occ.workflow for items in missing_occurrences.values() for occ in items}
+        print(
+            f"- PROBLEM: {len(missing_occurrences)} active node type"
+            f"{'s are' if len(missing_occurrences) != 1 else ' is'} missing across "
+            f"{len(workflows)} saved workflow{'s' if len(workflows) != 1 else ''}."
+        )
+        explicit = [dep for dep in missing_dependencies if dep.display_pack != "UNKNOWN"]
+        if explicit:
+            missing_pack_count = sum(1 for dep in explicit if dep.installed_pack is None)
+            installed_but_missing = sum(1 for dep in explicit if dep.installed_pack is not None)
+            print(
+                f"- Workflow metadata identifies {len(explicit)} intended pack ID"
+                f"{'s' if len(explicit) != 1 else ''}: {missing_pack_count} are not installed "
+                f"under that ID; {installed_but_missing} are installed but still fail to provide "
+                "the expected node(s)."
+            )
     else:
-        for pair in pairs:
-            names = " + ".join(pair.packs)
-            if workflow_root is None:
-                print(
-                    f"- REVIEW: {names}: Manager associates {pair.collision_count} of the "
-                    "same node IDs with both installed packs."
-                )
-                continue
+        print("- OK: No active workflow node types are missing from the running ComfyUI.")
 
-            if pair.used_count == 0:
-                print(
-                    f"- REVIEW: {names}: {pair.collision_count} potential collision IDs, "
-                    "but none are used by the saved workflows scanned."
-                )
-                continue
-
-            provider_text = ", ".join(
-                f"{provider} currently provides {count}"
-                for provider, count in pair.provider_counts
-            )
-            if pair.missing_used_count:
-                print(
-                    f"- PROBLEM: {names}: saved workflows use {pair.used_count} potentially "
-                    f"colliding node IDs. {provider_text or 'No current provider found'}. "
-                    f"{pair.missing_used_count} used node ID"
-                    f"{'s are' if pair.missing_used_count != 1 else ' is'} missing."
-                )
-            else:
-                print(
-                    f"- OK FOR NOW: {names}: saved workflows use {pair.used_count} potentially "
-                    f"colliding node IDs, and all currently resolve to a live provider "
-                    f"({provider_text})."
-                )
-
-    group_labels = print_pair_legend(pairs)
-
-    if workflow_root is not None and used_collisions:
-        print("\n=== Workflow-used potential collisions ===")
-        rows: list[tuple[str, ...]] = []
-        for item in sorted(
-            used_collisions,
-            key=lambda value: (
-                0 if value.current_provider is None else 1,
-                group_labels.get(value.installed_packs, ""),
-                value.node_id.casefold(),
-            ),
-        ):
-            rows.append(
-                (
-                    collision_status(item),
-                    group_labels.get(item.installed_packs, "?"),
-                    item.node_id,
-                    item.current_provider or "MISSING",
-                    str(len(item.workflow_files)),
-                )
-            )
-
-        print_table(
-            ("Status", "Group", "Node ID", "Current provider", "WFs"),
-            rows,
+    if used_collisions:
+        missing_collision_ids = sum(1 for item in used_collisions if item.current_provider is None)
+        print(
+            f"- REVIEW: {len(used_collisions)} workflow-used node ID"
+            f"{'s have' if len(used_collisions) != 1 else ' has'} potential installed-pack "
+            f"collisions. {len(used_collisions) - missing_collision_ids} currently have a live "
+            f"provider; {missing_collision_ids} do not. Collision data is advisory."
         )
-        print("WFs = number of active saved workflow files using that node ID.")
+    else:
+        print("- OK: No potential installed-pack collision IDs are used by the scanned workflows.")
 
-    if missing_used:
-        print("\n=== Needs attention ===")
-        for item in missing_used:
-            print(f"\n[PROBLEM] {item.node_id}")
-            print("  Installed packs Manager associates with this node ID:")
-            for pack in item.installed_packs:
-                print(f"    - {pack}")
-            print("  Current provider: MISSING")
-            print("  Actual problem:")
-            print(
-                "    The saved workflow references this exact node ID, but the running "
-                "ComfyUI has no backend node registered under that ID."
-            )
-            print("  Impact:")
-            print(
-                f"    {len(item.workflow_files)} saved workflow"
-                f"{'s' if len(item.workflow_files) != 1 else ''} cannot execute this "
-                "node as currently saved."
-            )
-            print("  Likely causes to investigate:")
-            print("    - the installed pack version removed or renamed the node ID")
-            print("    - an optional component/submodule/dependency did not load")
-            print("    - the workflow was created against an older pack version")
-            print("  Saved workflows:")
-            for filename in item.workflow_files:
-                print(f"    - {filename}")
-            print("  Decision:")
-            print(
-                "    Keep the workflows -> restore a compatible pack/version that registers "
-                "this node ID. Do not care about them -> archive/delete the workflows. "
-                "This missing node is not, by itself, proof that the two installed packs "
-                "are actively conflicting."
-            )
 
-    if workflow_root is not None:
-        print("\n=== Packs to review for cleanup ===")
-        if not cleanup_candidates:
-            print("No running node packs were found with zero saved-workflow usage.")
+def print_missing_dependencies(dependencies: list[MissingDependency]) -> None:
+    print("\n=== Missing workflow dependencies ===")
+    if not dependencies:
+        print("None.")
+        return
+
+    for dep in dependencies:
+        state = "INSTALLED, NODE STILL MISSING" if dep.installed_pack else "NOT INSTALLED"
+        if dep.display_pack == "UNKNOWN":
+            state = "PACK UNKNOWN"
+        print(f"\n[{state}] {dep.display_pack}")
+        if dep.installed_pack:
+            print(f"  Installed directory: {dep.installed_pack}")
+        print("  Missing node types:")
+        for node_type in dep.node_types:
+            count = sum(1 for occ in dep.occurrences if occ.node_type == node_type)
+            print(f"    - {node_type} ({count} instance{'s' if count != 1 else ''})")
+
+        versions = sorted({occ.version for occ in dep.occurrences if occ.version})
+        if versions:
+            print(f"  Workflow-recorded version(s): {', '.join(versions)}")
+
+        print("  Saved workflows:")
+        for workflow in dep.workflows:
+            print(f"    - {workflow}")
+
+        if dep.display_pack == "UNKNOWN" and dep.manager_candidates:
+            print("  Manager fallback candidates:")
+            for candidate in dep.manager_candidates:
+                print(f"    - {candidate}")
+        elif dep.manager_candidates and dep.display_pack not in dep.manager_candidates:
+            print("  Manager global-map candidates (advisory):")
+            for candidate in dep.manager_candidates:
+                print(f"    - {candidate}")
+
+        print("  What is actually wrong:")
+        print("    The running ComfyUI does not register the node ID(s) above, so these")
+        print("    workflow nodes cannot execute as currently saved.")
+        print("  Most likely next step:")
+        if dep.display_pack == "UNKNOWN":
+            print("    Identify the original pack, then install/restore a compatible version if")
+            print("    the workflow matters. Manager candidates are hints, not proof.")
+        elif dep.installed_pack:
+            print("    The expected pack is installed, so inspect its import/startup logs and")
+            print("    version history for a failed import, removed node ID, or optional dependency.")
         else:
-            for pack in cleanup_candidates:
-                print(f"\n{pack}")
-                print(f"  Live nodes registered now: {len(pack_nodes.get(pack, set()))}")
-                print(f"  Live nodes used by scanned workflows: {len(pack_used_nodes.get(pack, set()))}")
-                print(f"  Saved workflow files using its live nodes: {len(pack_workflows.get(pack, set()))}")
-                print(
-                    "  Why review: none of this pack's currently registered nodes appear "
-                    "in the saved workflows scanned."
-                )
-            print(
-                "\nReview only. A pack may still be used interactively, by unsaved workflows, "
-                "or by API-generated workflows."
-            )
-
-    if workflow_errors:
-        print(
-            f"\nWARNING: {len(workflow_errors)} workflow file"
-            f"{'s could' if len(workflow_errors) != 1 else ' could'} not be read."
-        )
-
-    unmatched = len(installed_set - matched_packs)
-    if unmatched:
-        print(
-            f"\nNote: {unmatched} installed pack"
-            f"{'s were' if unmatched != 1 else ' was'} not matched to Manager's node map."
-        )
+            print("    Install/restore the workflow-recorded pack if the workflow matters, or archive")
+            print("    the workflow if it no longer matters. Do not infer a collision from this alone.")
 
 
-def print_verbose_report(
+def print_collision_section(groups: list[CollisionGroup]) -> None:
+    print("\n=== Workflow-used potential node-ID collisions ===")
+    used_any = False
+    for group in groups:
+        used = [item for item in group.collisions if item.workflow_files]
+        if not used:
+            continue
+        used_any = True
+        print(f"\nGroup {group.label}")
+        print("  Installed packs associated with the same node ID(s):")
+        for pack in group.packs:
+            print(f"    - {pack}")
+        print("  Node ID                         Current provider          WFs")
+        print("  ------------------------------  ------------------------  ---")
+        for item in sorted(used, key=lambda value: value.node_id.casefold()):
+            provider = item.current_provider or "MISSING"
+            print(f"  {item.node_id[:30]:30}  {provider[:24]:24}  {len(item.workflow_files):3}")
+    if not used_any:
+        print("None used by the scanned workflows.")
+    print("\nPotential collision = Manager's static map associates the same NODE_CLASS_MAPPINGS")
+    print("key with more than one installed pack. This does not prove both implementations")
+    print("are active or that the collision is causing a problem.")
+
+
+def print_cleanup_candidates(
+    installed: list[str],
+    pack_nodes: dict[str, set[str]],
+    active_usage: dict[str, set[str]],
+) -> None:
+    used_nodes, workflows = pack_workflow_usage(pack_nodes, active_usage)
+    candidates = [
+        pack
+        for pack in installed
+        if pack_nodes.get(pack) and not used_nodes.get(pack)
+    ]
+    print("\n=== Packs to review for cleanup ===")
+    if not candidates:
+        print("No running packs with zero saved-workflow usage were found.")
+        return
+    for pack in candidates:
+        print(f"\n{pack}")
+        print(f"  Live nodes registered now: {len(pack_nodes.get(pack, set()))}")
+        print(f"  Live nodes used by scanned workflows: {len(used_nodes.get(pack, set()))}")
+        print(f"  Saved workflow files using its live nodes: {len(workflows.get(pack, set()))}")
+    print("\nReview only. These packs may still be used interactively, by unsaved workflows,")
+    print("or by API-generated workflows.")
+
+
+def print_verbose(
     custom_nodes: Path,
     manager_map: Path,
     url: str,
     workflow_root: Path | None,
-    installed: list[str],
-    matched: dict[ManagerEntry, str],
-    ambiguous: dict[str, list[ManagerEntry]],
-    pack_nodes: dict[str, set[str]],
     collisions: list[Collision],
-    active_usage: dict[str, set[str]],
+    only_used: bool,
     workflow_errors: list[tuple[str, str]],
-    only_used_overlaps: bool,
 ) -> None:
-    installed_set = set(installed)
-    matched_packs = set(matched.values())
-    running_packs = {pack for pack in pack_nodes if pack in installed_set}
-    pack_used_nodes, pack_workflows = pack_workflow_usage(pack_nodes, active_usage)
-    stats = technical_pack_stats(installed, collisions)
-
     print("\n=== Technical details ===")
     print(f"Custom nodes: {custom_nodes}")
     print(f"Manager map: {manager_map}")
     print(f"Runtime registry: {url}")
-    if workflow_root is not None:
+    if workflow_root:
         print(f"Workflows: {workflow_root}")
-    print(f"Manager-matched packs: {len(matched_packs)}")
-    print(f"Running packs: {len(running_packs)}")
 
-    print("\n=== Per-pack technical statistics ===")
-    rows: list[tuple[str, ...]] = []
-    for pack in installed:
-        rows.append(
-            (
-                pack,
-                str(len(pack_nodes.get(pack, set()))),
-                str(len(pack_used_nodes.get(pack, set()))),
-                str(len(pack_workflows.get(pack, set()))),
-                str(stats[pack]["potential_collisions"]),
-                str(stats[pack]["provides"]),
-                str(stats[pack]["other_provider"]),
-                str(stats[pack]["unregistered"]),
-                str(stats[pack]["workflow_used_collisions"]),
-            )
-        )
-
-    print_table(
-        (
-            "Pack",
-            "Live",
-            "Used",
-            "WFs",
-            "Collide",
-            "Provides",
-            "Other",
-            "Missing",
-            "UsedCol",
-        ),
-        rows,
-    )
-
-    print("\n=== Per-node potential collision details ===")
-    selected = (
-        [item for item in collisions if item.workflow_files]
-        if only_used_overlaps
-        else collisions
-    )
+    print("\n=== Potential collision details ===")
+    selected = [item for item in collisions if item.workflow_files] if only_used else collisions
     if not selected:
-        print("No matching potential collision details to show.")
-    else:
-        for item in selected:
-            print(f"\n{item.node_id}")
-            print("  Installed packs associated by Manager:")
-            for pack in item.installed_packs:
-                print(f"    - {pack}")
-            print(f"  Current provider: {item.current_provider or 'MISSING'}")
-            print(f"  Interpretation: {provider_risk_text(item)}")
-            if workflow_root is not None:
-                print(f"  Active saved workflows: {len(item.workflow_files)}")
-                for filename in item.workflow_files:
-                    print(f"    - {filename}")
-                if item.inactive_workflow_files:
-                    print(
-                        "  Muted/bypassed-only saved workflows: "
-                        f"{len(item.inactive_workflow_files)}"
-                    )
-                    for filename in item.inactive_workflow_files:
-                        print(f"    - {filename}")
-
-    if ambiguous:
-        print("\n=== Ambiguous Manager-to-directory matches ===")
-        for pack in sorted(ambiguous, key=str.casefold):
-            print(pack)
-            for entry in ambiguous[pack]:
-                print(f"  - {entry.title}: {entry.repo}")
+        print("None.")
+    for item in selected:
+        print(f"\n{item.node_id}")
+        print("  Installed Manager-associated packs:")
+        for pack in item.installed_packs:
+            print(f"    - {pack}")
+        print(f"  Current provider: {item.current_provider or 'MISSING'}")
+        if item.workflow_files:
+            print("  Saved workflows:")
+            for workflow in item.workflow_files:
+                print(f"    - {workflow}")
 
     if workflow_errors:
         print("\n=== Workflow read errors ===")
@@ -834,185 +778,168 @@ def print_verbose_report(
 
 
 def json_report(
-    custom_nodes: Path,
-    manager_map: Path,
-    url: str,
-    workflow_root: Path | None,
     installed: list[str],
-    matched: dict[ManagerEntry, str],
-    ambiguous: dict[str, list[ManagerEntry]],
     pack_nodes: dict[str, set[str]],
-    collisions: list[Collision],
+    paths: list[Path],
+    root: Path | None,
     active_usage: dict[str, set[str]],
+    missing_occurrences: dict[str, list[NodeOccurrence]],
+    dependencies: list[MissingDependency],
+    collisions: list[Collision],
     workflow_errors: list[tuple[str, str]],
 ) -> dict[str, Any]:
-    installed_set = set(installed)
-    matched_packs = set(matched.values())
-    running_packs = {pack for pack in pack_nodes if pack in installed_set}
-    pack_used_nodes, pack_workflows = pack_workflow_usage(pack_nodes, active_usage)
-    stats = technical_pack_stats(installed, collisions)
-    pairs = pair_summaries(collisions)
-
+    running = {pack for pack in pack_nodes if pack in set(installed)}
     return {
-        "terminology": {
-            "potential_node_id_collision": (
-                "Manager associates the same NODE_CLASS_MAPPINGS key / workflow node ID "
-                "with more than one locally installed pack. This is advisory and does not "
-                "prove both packs currently register the ID."
-            )
-        },
-        "sources": {
-            "custom_nodes": str(custom_nodes),
-            "manager_map": str(manager_map),
-            "object_info": url,
-            "workflows": str(workflow_root) if workflow_root else None,
-        },
         "summary": {
             "installed_packs": len(installed),
-            "manager_matched_packs": len(matched_packs),
-            "running_packs": len(running_packs),
-            "installed_pack_groups_with_potential_collisions": len(pairs),
-            "potential_node_id_collisions": len(collisions),
-            "workflow_used_collision_ids": sum(
-                1 for item in collisions if item.workflow_files
-            ),
-            "workflow_used_available_collision_ids": sum(
-                1
-                for item in collisions
-                if item.workflow_files and item.current_provider is not None
-            ),
-            "workflow_used_missing_collision_ids": sum(
-                1
-                for item in collisions
-                if item.workflow_files and item.current_provider is None
-            ),
+            "running_packs": len(running),
+            "workflows_scanned": len(paths),
+            "active_node_types": len(active_usage),
+            "missing_active_node_types": len(missing_occurrences),
+            "missing_active_node_instances": sum(len(v) for v in missing_occurrences.values()),
+            "missing_dependency_groups": len(dependencies),
+            "potential_collision_ids": len(collisions),
+            "workflow_used_collision_ids": sum(1 for c in collisions if c.workflow_files),
             "workflow_errors": len(workflow_errors),
         },
-        "packs": [
+        "missing_dependencies": [
             {
-                "name": pack,
-                "manager_matched": pack in matched_packs,
-                "runtime_registered_nodes": len(pack_nodes.get(pack, set())),
-                "workflow_used_runtime_nodes": len(pack_used_nodes.get(pack, set())),
-                "workflow_files_using_runtime_nodes": len(
-                    pack_workflows.get(pack, set())
-                ),
-                **stats[pack],
+                "workflow_pack_id": dep.display_pack,
+                "installed_pack": dep.installed_pack,
+                "node_types": list(dep.node_types),
+                "workflows": list(dep.workflows),
+                "manager_candidates": list(dep.manager_candidates),
+                "occurrences": [
+                    {
+                        "workflow": occ.workflow,
+                        "workflow_node_id": occ.workflow_node_id,
+                        "node_type": occ.node_type,
+                        "title": occ.title,
+                        "cnr_id": occ.cnr_id,
+                        "version": occ.version,
+                    }
+                    for occ in dep.occurrences
+                ],
             }
-            for pack in installed
+            for dep in dependencies
         ],
-        "collision_groups": [
-            {
-                "packs": list(pair.packs),
-                "collision_count": pair.collision_count,
-                "workflow_used_count": pair.used_count,
-                "workflow_used_available_count": pair.available_used_count,
-                "workflow_used_missing_count": pair.missing_used_count,
-                "current_provider_counts": dict(pair.provider_counts),
-            }
-            for pair in pairs
-        ],
-        "collisions": [
+        "potential_collisions": [
             {
                 "node_id": item.node_id,
                 "installed_packs": list(item.installed_packs),
                 "current_provider": item.current_provider,
-                "workflow_count": len(item.workflow_files),
                 "workflow_files": list(item.workflow_files),
-                "inactive_workflow_count": len(item.inactive_workflow_files),
-                "inactive_workflow_files": list(item.inactive_workflow_files),
-                "status": collision_status(item),
             }
             for item in collisions
         ],
-        "ambiguous_manager_matches": {
-            pack: [
-                {"title": entry.title, "repo": entry.repo}
-                for entry in pack_entries
-            ]
-            for pack, pack_entries in ambiguous.items()
-        },
+        "workflow_files": [
+            str(path.relative_to(root)) if root else str(path) for path in paths
+        ],
         "workflow_errors": [
-            {"file": filename, "error": error}
-            for filename, error in workflow_errors
+            {"file": filename, "error": error} for filename, error in workflow_errors
         ],
     }
 
 
 def main() -> int:
     args = parse_args()
-
-    if args.only_used_overlaps and args.workflows is None:
-        print("ERROR: --only-used-overlaps requires --workflows", file=sys.stderr)
-        return 1
-
     try:
         custom_nodes, manager_map, url, workflow_root = default_paths(args)
         installed = installed_pack_names(custom_nodes)
-        entries = load_manager_entries(manager_map)
-        matched, ambiguous = match_entries_to_installed(entries, installed)
+        manager_entries = load_manager_entries(manager_map)
+        manager_by_node = manager_candidates_by_node(manager_entries)
+        matched_entries = match_manager_entries_to_installed(manager_entries, installed)
         object_info = load_object_info(url)
         current_providers, pack_nodes = runtime_node_owners(object_info)
 
+        paths: list[Path] = []
         active_usage: dict[str, set[str]] = {}
-        inactive_usage: dict[str, set[str]] = {}
+        active_occurrences: dict[str, list[NodeOccurrence]] = {}
+        missing_occurrences: dict[str, list[NodeOccurrence]] = {}
         workflow_errors: list[tuple[str, str]] = []
-        if workflow_root is not None:
-            active_usage, inactive_usage, workflow_errors = workflow_usage(workflow_root)
 
-        collisions = build_collisions(
-            matched,
-            current_providers,
-            active_usage,
-            inactive_usage,
+        if workflow_root is not None:
+            paths = workflow_paths(workflow_root, args.workflow)
+            (
+                active_usage,
+                active_occurrences,
+                missing_occurrences,
+                workflow_errors,
+            ) = scan_workflows(workflow_root, paths, set(object_info))
+
+        dependencies = build_missing_dependencies(
+            missing_occurrences, manager_by_node, installed
         )
+        collisions = build_collisions(
+            matched_entries, current_providers, active_usage
+        )
+        groups = collision_groups(collisions)
     except RuntimeError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
     if args.json:
-        report = json_report(
-            custom_nodes,
-            manager_map,
-            url,
-            workflow_root,
-            installed,
-            matched,
-            ambiguous,
-            pack_nodes,
-            collisions,
-            active_usage,
-            workflow_errors,
+        print(
+            json.dumps(
+                json_report(
+                    installed,
+                    pack_nodes,
+                    paths,
+                    workflow_root,
+                    active_usage,
+                    missing_occurrences,
+                    dependencies,
+                    collisions,
+                    workflow_errors,
+                ),
+                indent=2,
+                sort_keys=True,
+            )
         )
-        print(json.dumps(report, indent=2, sort_keys=True))
         return 0
 
-    print_plain_report(
+    if workflow_root is None:
+        print("=== ComfyUI node-pack audit ===")
+        print(f"Installed node packs: {len(installed)}")
+        print(f"Potential installed node-ID collisions: {len(collisions)}")
+        print_collision_section(groups)
+        if args.verbose:
+            print_verbose(
+                custom_nodes,
+                manager_map,
+                url,
+                workflow_root,
+                collisions,
+                args.only_used_overlaps,
+                workflow_errors,
+            )
+        return 0
+
+    print_overview(
         installed,
-        matched,
         pack_nodes,
-        collisions,
+        len(paths),
         active_usage,
-        workflow_root,
+        missing_occurrences,
+        dependencies,
+        collisions,
         workflow_errors,
     )
+    print_plain_summary(missing_occurrences, dependencies, collisions)
+    print_missing_dependencies(dependencies)
+    print_collision_section(groups)
+    print_cleanup_candidates(installed, pack_nodes, active_usage)
 
     if args.verbose:
-        print_verbose_report(
+        print_verbose(
             custom_nodes,
             manager_map,
             url,
             workflow_root,
-            installed,
-            matched,
-            ambiguous,
-            pack_nodes,
             collisions,
-            active_usage,
-            workflow_errors,
             args.only_used_overlaps,
+            workflow_errors,
         )
-
     return 0
 
 
