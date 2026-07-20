@@ -1,19 +1,27 @@
 #!/usr/bin/env python3
-"""Audit installed ComfyUI node packs, shared node names, and workflow usage.
+"""Audit installed ComfyUI node packs for node-ID collisions and workflow impact.
 
-The default report is designed to answer practical cleanup questions:
+Terminology
+-----------
+ComfyUI workflows refer to backend node classes by a string node ID. On the
+backend, custom-node packs register those IDs through NODE_CLASS_MAPPINGS.
 
-1. Are installed node packs known to provide the same node names?
-2. Do saved workflows actually use any of those shared node names?
-3. Which pack currently provides each workflow-used shared node?
-4. Are any workflow-used shared nodes missing right now?
-5. Which running packs have no live nodes referenced by the saved workflows scanned?
+ComfyUI Manager's extension-node-map.json is built from static analysis of node
+pack source code. If Manager associates the same node ID with more than one
+locally installed pack, this script calls that a "potential node-ID collision".
 
-ComfyUI Manager's extension-node-map.json is static-analysis metadata. A shared
-node name means Manager associates the same node ID with more than one locally
-installed pack. This is a potential conflict, not proof that both packs register
-the node at runtime. The running /object_info registry is used to identify the
-current provider when available.
+A potential collision is advisory. It does not prove that both packs currently
+register the ID or that anything is broken. The running ComfyUI /object_info
+endpoint is used to show which pack currently provides each node ID.
+
+The default report is decision-oriented:
+1. high-level numerical overview;
+2. plain-language summary by installed pack group;
+3. a narrow terminal-friendly table of workflow-used collision IDs;
+4. detailed vertical records only for items that need attention;
+5. cleanup-review candidates.
+
+Use --verbose for technical per-pack statistics and every potential collision.
 """
 
 from __future__ import annotations
@@ -43,7 +51,7 @@ class ManagerEntry:
 
 
 @dataclass(frozen=True)
-class SharedNode:
+class Collision:
     node_id: str
     installed_packs: tuple[str, ...]
     current_provider: str | None
@@ -54,9 +62,9 @@ class SharedNode:
 @dataclass(frozen=True)
 class PairSummary:
     packs: tuple[str, ...]
-    shared_count: int
+    collision_count: int
     used_count: int
-    working_used_count: int
+    available_used_count: int
     missing_used_count: int
     provider_counts: tuple[tuple[str, int], ...]
 
@@ -64,8 +72,8 @@ class PairSummary:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Audit installed ComfyUI node packs for shared node names, current "
-            "providers, and optional saved-workflow usage."
+            "Audit installed ComfyUI node packs for potential node-ID collisions, "
+            "current runtime providers, and optional saved-workflow usage."
         )
     )
     parser.add_argument(
@@ -104,14 +112,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--verbose",
         action="store_true",
-        help="show technical per-pack statistics and every Manager-known shared node",
+        help="show technical per-pack statistics and every potential node-ID collision",
     )
     parser.add_argument(
         "--only-used-overlaps",
         action="store_true",
         help=(
-            "with --workflows --verbose, limit verbose shared-node details to nodes "
-            "used by active saved workflows"
+            "compatibility option: with --workflows --verbose, limit verbose "
+            "collision details to node IDs used by active saved workflows"
         ),
     )
     parser.add_argument(
@@ -140,6 +148,7 @@ def env_values(path: Path) -> dict[str, str]:
         if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
             value = value[1:-1]
         values[key.strip()] = value
+
     return values
 
 
@@ -317,6 +326,7 @@ def runtime_node_owners(
 
 
 def iter_nodes(value: Any) -> Iterator[dict[str, Any]]:
+    """Yield UI workflow node records, including nested/subgraph node lists."""
     if isinstance(value, dict):
         nodes = value.get("nodes")
         if isinstance(nodes, list):
@@ -369,23 +379,23 @@ def workflow_usage(
     return active, inactive, errors
 
 
-def build_shared_nodes(
+def build_collisions(
     matched: dict[ManagerEntry, str],
     current_providers: dict[str, str],
     active_usage: dict[str, set[str]],
     inactive_usage: dict[str, set[str]],
-) -> list[SharedNode]:
+) -> list[Collision]:
     installed_claimants: dict[str, set[str]] = defaultdict(set)
     for entry, installed_pack in matched.items():
         for node_id in entry.node_ids:
             installed_claimants[node_id].add(installed_pack)
 
-    shared_nodes: list[SharedNode] = []
+    collisions: list[Collision] = []
     for node_id, packs in installed_claimants.items():
         if len(packs) < 2:
             continue
-        shared_nodes.append(
-            SharedNode(
+        collisions.append(
+            Collision(
                 node_id=node_id,
                 installed_packs=tuple(sorted(packs, key=str.casefold)),
                 current_provider=current_providers.get(node_id),
@@ -396,7 +406,7 @@ def build_shared_nodes(
             )
         )
 
-    return sorted(shared_nodes, key=lambda item: item.node_id.casefold())
+    return sorted(collisions, key=lambda item: item.node_id.casefold())
 
 
 def pack_workflow_usage(
@@ -416,9 +426,9 @@ def pack_workflow_usage(
     return pack_used_nodes, pack_workflows
 
 
-def pair_summaries(shared_nodes: list[SharedNode]) -> list[PairSummary]:
-    grouped: dict[tuple[str, ...], list[SharedNode]] = defaultdict(list)
-    for item in shared_nodes:
+def pair_summaries(collisions: list[Collision]) -> list[PairSummary]:
+    grouped: dict[tuple[str, ...], list[Collision]] = defaultdict(list)
+    for item in collisions:
         grouped[item.installed_packs].append(item)
 
     summaries: list[PairSummary] = []
@@ -432,9 +442,9 @@ def pair_summaries(shared_nodes: list[SharedNode]) -> list[PairSummary]:
         summaries.append(
             PairSummary(
                 packs=packs,
-                shared_count=len(items),
+                collision_count=len(items),
                 used_count=len(used),
-                working_used_count=sum(
+                available_used_count=sum(
                     1 for item in used if item.current_provider is not None
                 ),
                 missing_used_count=sum(
@@ -451,39 +461,41 @@ def pair_summaries(shared_nodes: list[SharedNode]) -> list[PairSummary]:
 
 def technical_pack_stats(
     installed: list[str],
-    shared_nodes: list[SharedNode],
+    collisions: list[Collision],
 ) -> dict[str, dict[str, int]]:
     stats = {
         pack: {
-            "shared": 0,
+            "potential_collisions": 0,
             "provides": 0,
             "other_provider": 0,
-            "missing": 0,
-            "workflow_used_shared": 0,
+            "unregistered": 0,
+            "workflow_used_collisions": 0,
         }
         for pack in installed
     }
 
-    for item in shared_nodes:
+    for item in collisions:
         for pack in item.installed_packs:
             if pack not in stats:
                 continue
-            stats[pack]["shared"] += 1
+            stats[pack]["potential_collisions"] += 1
             if item.current_provider is None:
-                stats[pack]["missing"] += 1
+                stats[pack]["unregistered"] += 1
             elif item.current_provider == pack:
                 stats[pack]["provides"] += 1
             else:
                 stats[pack]["other_provider"] += 1
             if item.workflow_files:
-                stats[pack]["workflow_used_shared"] += 1
+                stats[pack]["workflow_used_collisions"] += 1
 
     return stats
 
 
 def print_table(headers: tuple[str, ...], rows: list[tuple[str, ...]]) -> None:
+    """Print a compact table. Keep wide free-text fields out of these tables."""
     if not rows:
         return
+
     widths = [len(value) for value in headers]
     for row in rows:
         for index, value in enumerate(row):
@@ -495,17 +507,49 @@ def print_table(headers: tuple[str, ...], rows: list[tuple[str, ...]]) -> None:
         print("  ".join(value.ljust(widths[i]) for i, value in enumerate(row)))
 
 
-def status_for_shared_node(item: SharedNode) -> str:
+def collision_status(item: Collision) -> str:
+    return "PROBLEM" if item.current_provider is None else "OK"
+
+
+def provider_risk_text(item: Collision) -> str:
     if item.current_provider is None:
-        return "PROBLEM"
-    return "OK"
+        return (
+            "The workflow references this exact node ID, but the running ComfyUI "
+            "does not currently have any backend node registered under that ID. "
+            "Those workflows cannot execute that node as saved."
+        )
+    return (
+        f"The workflow currently resolves this node ID to {item.current_provider}. "
+        "Manager also associates the same ID with another installed pack, so this is "
+        "a potential collision, but there is no evidence of a runtime failure right now."
+    )
+
+
+def print_pair_legend(pairs: list[PairSummary]) -> dict[tuple[str, ...], str]:
+    labels: dict[tuple[str, ...], str] = {}
+    if not pairs:
+        return labels
+
+    print("\n=== Installed pack groups with potential node-ID collisions ===")
+    for index, pair in enumerate(pairs, start=1):
+        label = chr(ord("A") + index - 1) if index <= 26 else str(index)
+        labels[pair.packs] = label
+        print(f"Group {label}")
+        for pack in pair.packs:
+            print(f"  - {pack}")
+        print(f"  Potential collision IDs: {pair.collision_count}")
+        if pair.used_count:
+            print(f"  Used by saved workflows:  {pair.used_count}")
+        else:
+            print("  Used by saved workflows:  0")
+    return labels
 
 
 def print_plain_report(
     installed: list[str],
     matched: dict[ManagerEntry, str],
     pack_nodes: dict[str, set[str]],
-    shared_nodes: list[SharedNode],
+    collisions: list[Collision],
     active_usage: dict[str, set[str]],
     workflow_root: Path | None,
     workflow_errors: list[tuple[str, str]],
@@ -514,11 +558,15 @@ def print_plain_report(
     matched_packs = set(matched.values())
     running_packs = {pack for pack in pack_nodes if pack in installed_set}
     pack_used_nodes, pack_workflows = pack_workflow_usage(pack_nodes, active_usage)
-    pairs = pair_summaries(shared_nodes)
+    pairs = pair_summaries(collisions)
 
-    used_shared = [item for item in shared_nodes if item.workflow_files]
-    working_used = [item for item in used_shared if item.current_provider is not None]
-    missing_used = [item for item in used_shared if item.current_provider is None]
+    used_collisions = [item for item in collisions if item.workflow_files]
+    available_used = [
+        item for item in used_collisions if item.current_provider is not None
+    ]
+    missing_used = [
+        item for item in used_collisions if item.current_provider is None
+    ]
 
     cleanup_candidates = [
         pack
@@ -528,118 +576,144 @@ def print_plain_report(
     ]
 
     print("=== ComfyUI node-pack audit ===")
-    print(f"Installed node packs:                         {len(installed)}")
-    print(f"Running node packs detected:                  {len(running_packs)}")
-    print(f"Installed pack groups sharing node names:     {len(pairs)}")
-    print(f"Shared node names known to Manager:           {len(shared_nodes)}")
+    print(f"Installed node packs:                       {len(installed)}")
+    print(f"Running node packs detected:                {len(running_packs)}")
+    print(f"Pack groups with potential collisions:      {len(pairs)}")
+    print(f"Potential node-ID collisions:               {len(collisions)}")
     if workflow_root is not None:
-        print(f"Shared node names used by saved workflows:    {len(used_shared)}")
-        print(f"  Working now:                                {len(working_used)}")
-        print(f"  Missing now:                                {len(missing_used)}")
-        print(f"Packs with no saved-workflow use found:        {len(cleanup_candidates)}")
-        print(f"Unreadable workflow files:                     {len(workflow_errors)}")
+        print(f"Collision IDs used by saved workflows:      {len(used_collisions)}")
+        print(f"  Available now:                            {len(available_used)}")
+        print(f"  Missing now:                              {len(missing_used)}")
+        print(f"Packs with no saved-workflow use found:     {len(cleanup_candidates)}")
+        print(f"Unreadable workflow files:                  {len(workflow_errors)}")
+
+    print("\nWhat 'potential collision' means:")
+    print(
+        "  Manager associates the same ComfyUI node ID (the NODE_CLASS_MAPPINGS key "
+        "stored in workflows) with more than one installed pack."
+    )
+    print(
+        "  It does NOT mean the packs contain the same exact implementation, and it "
+        "does NOT prove both packs are actively registering the node right now."
+    )
 
     print("\n=== Summary ===")
-    if not shared_nodes:
-        print("- OK: No installed pack groups are known by Manager to share node names.")
+    if not collisions:
+        print("- OK: No potential node-ID collisions were found between installed packs.")
     else:
         for pair in pairs:
             names = " + ".join(pair.packs)
             if workflow_root is None:
-                print(f"- REVIEW: {names} share {pair.shared_count} node names.")
+                print(
+                    f"- REVIEW: {names}: Manager associates {pair.collision_count} of the "
+                    "same node IDs with both installed packs."
+                )
                 continue
 
             if pair.used_count == 0:
                 print(
-                    f"- REVIEW: {names} share {pair.shared_count} node names, but none of "
-                    "those shared names are used by the saved workflows scanned."
+                    f"- REVIEW: {names}: {pair.collision_count} potential collision IDs, "
+                    "but none are used by the saved workflows scanned."
                 )
                 continue
 
             provider_text = ", ".join(
-                f"{provider} provides {count}"
+                f"{provider} currently provides {count}"
                 for provider, count in pair.provider_counts
             )
             if pair.missing_used_count:
                 print(
-                    f"- PROBLEM: {names} share {pair.shared_count} node names. Saved "
-                    f"workflows use {pair.used_count}; {provider_text or 'no current provider found'}; "
-                    f"{pair.missing_used_count} used node name"
+                    f"- PROBLEM: {names}: saved workflows use {pair.used_count} potentially "
+                    f"colliding node IDs. {provider_text or 'No current provider found'}. "
+                    f"{pair.missing_used_count} used node ID"
                     f"{'s are' if pair.missing_used_count != 1 else ' is'} missing."
                 )
             else:
                 print(
-                    f"- OK: {names} share {pair.shared_count} node names. Saved workflows "
-                    f"use {pair.used_count}, and all are currently available "
+                    f"- OK FOR NOW: {names}: saved workflows use {pair.used_count} potentially "
+                    f"colliding node IDs, and all currently resolve to a live provider "
                     f"({provider_text})."
                 )
 
-    if workflow_root is not None and used_shared:
-        print("\n=== Shared nodes used by saved workflows ===")
+    group_labels = print_pair_legend(pairs)
+
+    if workflow_root is not None and used_collisions:
+        print("\n=== Workflow-used potential collisions ===")
         rows: list[tuple[str, ...]] = []
         for item in sorted(
-            used_shared,
+            used_collisions,
             key=lambda value: (
                 0 if value.current_provider is None else 1,
-                tuple(pack.casefold() for pack in value.installed_packs),
+                group_labels.get(value.installed_packs, ""),
                 value.node_id.casefold(),
             ),
         ):
             rows.append(
                 (
-                    status_for_shared_node(item),
-                    " + ".join(item.installed_packs),
+                    collision_status(item),
+                    group_labels.get(item.installed_packs, "?"),
                     item.node_id,
                     item.current_provider or "MISSING",
-                    ", ".join(item.workflow_files),
+                    str(len(item.workflow_files)),
                 )
             )
+
         print_table(
-            ("Status", "Installed packs", "Node", "Current provider", "Saved workflows"),
+            ("Status", "Group", "Node ID", "Current provider", "WFs"),
             rows,
         )
+        print("WFs = number of active saved workflow files using that node ID.")
 
     if missing_used:
         print("\n=== Needs attention ===")
-        rows = [
-            (
-                " + ".join(item.installed_packs),
-                item.node_id,
-                "MISSING",
-                ", ".join(item.workflow_files),
+        for item in missing_used:
+            print(f"\n[PROBLEM] {item.node_id}")
+            print("  Installed packs Manager associates with this node ID:")
+            for pack in item.installed_packs:
+                print(f"    - {pack}")
+            print("  Current provider: MISSING")
+            print("  Actual problem:")
+            print(
+                "    The saved workflow references this exact node ID, but the running "
+                "ComfyUI has no backend node registered under that ID."
             )
-            for item in missing_used
-        ]
-        print_table(
-            ("Installed packs", "Node", "Current provider", "Saved workflows"),
-            rows,
-        )
-        print(
-            "These workflows reference a shared node name that the running ComfyUI "
-            "does not currently provide."
-        )
+            print("  Impact:")
+            print(
+                f"    {len(item.workflow_files)} saved workflow"
+                f"{'s' if len(item.workflow_files) != 1 else ''} cannot execute this "
+                "node as currently saved."
+            )
+            print("  Likely causes to investigate:")
+            print("    - the installed pack version removed or renamed the node ID")
+            print("    - an optional component/submodule/dependency did not load")
+            print("    - the workflow was created against an older pack version")
+            print("  Saved workflows:")
+            for filename in item.workflow_files:
+                print(f"    - {filename}")
+            print("  Decision:")
+            print(
+                "    Keep the workflows -> restore a compatible pack/version that registers "
+                "this node ID. Do not care about them -> archive/delete the workflows. "
+                "This missing node is not, by itself, proof that the two installed packs "
+                "are actively conflicting."
+            )
 
     if workflow_root is not None:
         print("\n=== Packs to review for cleanup ===")
         if not cleanup_candidates:
             print("No running node packs were found with zero saved-workflow usage.")
         else:
-            rows = [
-                (
-                    pack,
-                    str(len(pack_nodes.get(pack, set()))),
-                    str(len(pack_used_nodes.get(pack, set()))),
-                    str(len(pack_workflows.get(pack, set()))),
-                    "No live nodes from this pack appear in the saved workflows scanned",
+            for pack in cleanup_candidates:
+                print(f"\n{pack}")
+                print(f"  Live nodes registered now: {len(pack_nodes.get(pack, set()))}")
+                print(f"  Live nodes used by scanned workflows: {len(pack_used_nodes.get(pack, set()))}")
+                print(f"  Saved workflow files using its live nodes: {len(pack_workflows.get(pack, set()))}")
+                print(
+                    "  Why review: none of this pack's currently registered nodes appear "
+                    "in the saved workflows scanned."
                 )
-                for pack in cleanup_candidates
-            ]
-            print_table(
-                ("Pack", "Live nodes", "Used nodes", "Workflow files", "Why review"),
-                rows,
-            )
             print(
-                "Review only. A pack may still be used interactively, by unsaved workflows, "
+                "\nReview only. A pack may still be used interactively, by unsaved workflows, "
                 "or by API-generated workflows."
             )
 
@@ -656,11 +730,6 @@ def print_plain_report(
             f"{'s were' if unmatched != 1 else ' was'} not matched to Manager's node map."
         )
 
-    print(
-        "\nNote: A shared node name means Manager says multiple installed packs may "
-        "provide that name. It does not by itself prove an active conflict."
-    )
-
 
 def print_verbose_report(
     custom_nodes: Path,
@@ -671,7 +740,7 @@ def print_verbose_report(
     matched: dict[ManagerEntry, str],
     ambiguous: dict[str, list[ManagerEntry]],
     pack_nodes: dict[str, set[str]],
-    shared_nodes: list[SharedNode],
+    collisions: list[Collision],
     active_usage: dict[str, set[str]],
     workflow_errors: list[tuple[str, str]],
     only_used_overlaps: bool,
@@ -680,7 +749,7 @@ def print_verbose_report(
     matched_packs = set(matched.values())
     running_packs = {pack for pack in pack_nodes if pack in installed_set}
     pack_used_nodes, pack_workflows = pack_workflow_usage(pack_nodes, active_usage)
-    stats = technical_pack_stats(installed, shared_nodes)
+    stats = technical_pack_stats(installed, collisions)
 
     print("\n=== Technical details ===")
     print(f"Custom nodes: {custom_nodes}")
@@ -688,9 +757,11 @@ def print_verbose_report(
     print(f"Runtime registry: {url}")
     if workflow_root is not None:
         print(f"Workflows: {workflow_root}")
+    print(f"Manager-matched packs: {len(matched_packs)}")
+    print(f"Running packs: {len(running_packs)}")
 
     print("\n=== Per-pack technical statistics ===")
-    rows = []
+    rows: list[tuple[str, ...]] = []
     for pack in installed:
         rows.append(
             (
@@ -698,45 +769,45 @@ def print_verbose_report(
                 str(len(pack_nodes.get(pack, set()))),
                 str(len(pack_used_nodes.get(pack, set()))),
                 str(len(pack_workflows.get(pack, set()))),
-                str(stats[pack]["shared"]),
+                str(stats[pack]["potential_collisions"]),
                 str(stats[pack]["provides"]),
                 str(stats[pack]["other_provider"]),
-                str(stats[pack]["missing"]),
-                str(stats[pack]["workflow_used_shared"]),
+                str(stats[pack]["unregistered"]),
+                str(stats[pack]["workflow_used_collisions"]),
             )
         )
+
     print_table(
         (
             "Pack",
             "Live",
             "Used",
             "WFs",
-            "Shared",
+            "Collide",
             "Provides",
             "Other",
             "Missing",
-            "UsedShared",
+            "UsedCol",
         ),
         rows,
     )
-    print(
-        f"Manager-matched packs: {len(matched_packs)} | "
-        f"Running packs: {len(running_packs)}"
-    )
 
-    print("\n=== Per-node shared-name details ===")
+    print("\n=== Per-node potential collision details ===")
     selected = (
-        [item for item in shared_nodes if item.workflow_files]
+        [item for item in collisions if item.workflow_files]
         if only_used_overlaps
-        else shared_nodes
+        else collisions
     )
     if not selected:
-        print("No matching shared-node details to show.")
+        print("No matching potential collision details to show.")
     else:
         for item in selected:
             print(f"\n{item.node_id}")
-            print(f"  Installed packs: {', '.join(item.installed_packs)}")
+            print("  Installed packs associated by Manager:")
+            for pack in item.installed_packs:
+                print(f"    - {pack}")
             print(f"  Current provider: {item.current_provider or 'MISSING'}")
+            print(f"  Interpretation: {provider_risk_text(item)}")
             if workflow_root is not None:
                 print(f"  Active saved workflows: {len(item.workflow_files)}")
                 for filename in item.workflow_files:
@@ -771,7 +842,7 @@ def json_report(
     matched: dict[ManagerEntry, str],
     ambiguous: dict[str, list[ManagerEntry]],
     pack_nodes: dict[str, set[str]],
-    shared_nodes: list[SharedNode],
+    collisions: list[Collision],
     active_usage: dict[str, set[str]],
     workflow_errors: list[tuple[str, str]],
 ) -> dict[str, Any]:
@@ -779,10 +850,17 @@ def json_report(
     matched_packs = set(matched.values())
     running_packs = {pack for pack in pack_nodes if pack in installed_set}
     pack_used_nodes, pack_workflows = pack_workflow_usage(pack_nodes, active_usage)
-    stats = technical_pack_stats(installed, shared_nodes)
-    pairs = pair_summaries(shared_nodes)
+    stats = technical_pack_stats(installed, collisions)
+    pairs = pair_summaries(collisions)
 
     return {
+        "terminology": {
+            "potential_node_id_collision": (
+                "Manager associates the same NODE_CLASS_MAPPINGS key / workflow node ID "
+                "with more than one locally installed pack. This is advisory and does not "
+                "prove both packs currently register the ID."
+            )
+        },
         "sources": {
             "custom_nodes": str(custom_nodes),
             "manager_map": str(manager_map),
@@ -793,19 +871,19 @@ def json_report(
             "installed_packs": len(installed),
             "manager_matched_packs": len(matched_packs),
             "running_packs": len(running_packs),
-            "installed_pack_groups_with_shared_node_names": len(pairs),
-            "shared_node_names": len(shared_nodes),
-            "workflow_used_shared_node_names": sum(
-                1 for item in shared_nodes if item.workflow_files
+            "installed_pack_groups_with_potential_collisions": len(pairs),
+            "potential_node_id_collisions": len(collisions),
+            "workflow_used_collision_ids": sum(
+                1 for item in collisions if item.workflow_files
             ),
-            "workflow_used_working_shared_node_names": sum(
+            "workflow_used_available_collision_ids": sum(
                 1
-                for item in shared_nodes
+                for item in collisions
                 if item.workflow_files and item.current_provider is not None
             ),
-            "workflow_used_missing_shared_node_names": sum(
+            "workflow_used_missing_collision_ids": sum(
                 1
-                for item in shared_nodes
+                for item in collisions
                 if item.workflow_files and item.current_provider is None
             ),
             "workflow_errors": len(workflow_errors),
@@ -823,18 +901,18 @@ def json_report(
             }
             for pack in installed
         ],
-        "shared_node_groups": [
+        "collision_groups": [
             {
                 "packs": list(pair.packs),
-                "shared_count": pair.shared_count,
+                "collision_count": pair.collision_count,
                 "workflow_used_count": pair.used_count,
-                "workflow_used_working_count": pair.working_used_count,
+                "workflow_used_available_count": pair.available_used_count,
                 "workflow_used_missing_count": pair.missing_used_count,
                 "current_provider_counts": dict(pair.provider_counts),
             }
             for pair in pairs
         ],
-        "shared_nodes": [
+        "collisions": [
             {
                 "node_id": item.node_id,
                 "installed_packs": list(item.installed_packs),
@@ -843,8 +921,9 @@ def json_report(
                 "workflow_files": list(item.workflow_files),
                 "inactive_workflow_count": len(item.inactive_workflow_files),
                 "inactive_workflow_files": list(item.inactive_workflow_files),
+                "status": collision_status(item),
             }
-            for item in shared_nodes
+            for item in collisions
         ],
         "ambiguous_manager_matches": {
             pack: [
@@ -881,7 +960,7 @@ def main() -> int:
         if workflow_root is not None:
             active_usage, inactive_usage, workflow_errors = workflow_usage(workflow_root)
 
-        shared_nodes = build_shared_nodes(
+        collisions = build_collisions(
             matched,
             current_providers,
             active_usage,
@@ -901,7 +980,7 @@ def main() -> int:
             matched,
             ambiguous,
             pack_nodes,
-            shared_nodes,
+            collisions,
             active_usage,
             workflow_errors,
         )
@@ -912,7 +991,7 @@ def main() -> int:
         installed,
         matched,
         pack_nodes,
-        shared_nodes,
+        collisions,
         active_usage,
         workflow_root,
         workflow_errors,
@@ -928,7 +1007,7 @@ def main() -> int:
             matched,
             ambiguous,
             pack_nodes,
-            shared_nodes,
+            collisions,
             active_usage,
             workflow_errors,
             args.only_used_overlaps,
