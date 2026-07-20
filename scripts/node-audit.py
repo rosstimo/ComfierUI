@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
-"""Audit installed ComfyUI node-pack overlaps and saved-workflow usage.
+"""Audit installed ComfyUI node packs, shared node names, and workflow usage.
 
-The default report is intentionally plain-language and decision-oriented. It
-answers three questions:
+The default report is designed to answer practical cleanup questions:
 
-1. Are multiple installed packs known to claim the same node names?
-2. Do saved workflows use any of those overlapping node names?
-3. Are any workflow-used overlapping nodes missing from the running ComfyUI?
+1. Are installed node packs known to provide the same node names?
+2. Do saved workflows actually use any of those shared node names?
+3. Which pack currently provides each workflow-used shared node?
+4. Are any workflow-used shared nodes missing right now?
+5. Which running packs have no live nodes referenced by the saved workflows scanned?
 
-ComfyUI Manager's extension-node-map.json is static-analysis metadata, so an
-"overlap" is advisory. It means Manager associates the same node ID with more
-than one locally installed pack. It does not prove both packs successfully
-register that node at runtime. The running /object_info registry is used to show
-which pack currently owns a node when ComfyUI exposes that information.
+ComfyUI Manager's extension-node-map.json is static-analysis metadata. A shared
+node name means Manager associates the same node ID with more than one locally
+installed pack. This is a potential conflict, not proof that both packs register
+the node at runtime. The running /object_info registry is used to identify the
+current provider when available.
 """
 
 from __future__ import annotations
@@ -42,10 +43,10 @@ class ManagerEntry:
 
 
 @dataclass(frozen=True)
-class Overlap:
+class SharedNode:
     node_id: str
-    installed_claimants: tuple[str, ...]
-    runtime_owner: str | None
+    installed_packs: tuple[str, ...]
+    current_provider: str | None
     workflow_files: tuple[str, ...]
     inactive_workflow_files: tuple[str, ...]
 
@@ -53,18 +54,18 @@ class Overlap:
 @dataclass(frozen=True)
 class PairSummary:
     packs: tuple[str, ...]
-    overlap_count: int
-    used_overlap_count: int
-    used_registered_count: int
-    used_missing_count: int
-    owner_counts: tuple[tuple[str, int], ...]
+    shared_count: int
+    used_count: int
+    working_used_count: int
+    missing_used_count: int
+    provider_counts: tuple[tuple[str, int], ...]
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Audit locally installed ComfyUI node packs for Manager-known node-name "
-            "overlaps, runtime ownership, and optional saved-workflow usage."
+            "Audit installed ComfyUI node packs for shared node names, current "
+            "providers, and optional saved-workflow usage."
         )
     )
     parser.add_argument(
@@ -96,21 +97,21 @@ def parse_args() -> argparse.Namespace:
         const="__ENV__",
         metavar="PATH",
         help=(
-            "also inspect saved workflows; optionally provide a workflow directory. "
+            "inspect saved workflows; optionally provide a workflow directory. "
             "Without PATH, use COMFYUI_WORKFLOWS_PATH or ./workflows"
         ),
     )
     parser.add_argument(
         "--verbose",
         action="store_true",
-        help="show technical pack statistics and per-node overlap details",
+        help="show technical per-pack statistics and every Manager-known shared node",
     )
     parser.add_argument(
         "--only-used-overlaps",
         action="store_true",
         help=(
-            "with --workflows --verbose, show only overlap details referenced by "
-            "active saved workflows"
+            "with --workflows --verbose, limit verbose shared-node details to nodes "
+            "used by active saved workflows"
         ),
     )
     parser.add_argument(
@@ -241,9 +242,7 @@ def load_manager_entries(path: Path) -> list[ManagerEntry]:
         if not isinstance(title, str) or not title.strip():
             title = repo_basename(repo)
 
-        entries.append(
-            ManagerEntry(repo=repo, title=title, node_ids=clean_node_ids)
-        )
+        entries.append(ManagerEntry(repo=repo, title=title, node_ids=clean_node_ids))
 
     return entries
 
@@ -370,27 +369,26 @@ def workflow_usage(
     return active, inactive, errors
 
 
-def build_overlaps(
+def build_shared_nodes(
     matched: dict[ManagerEntry, str],
-    runtime_owners: dict[str, str],
+    current_providers: dict[str, str],
     active_usage: dict[str, set[str]],
     inactive_usage: dict[str, set[str]],
-) -> list[Overlap]:
+) -> list[SharedNode]:
     installed_claimants: dict[str, set[str]] = defaultdict(set)
-
     for entry, installed_pack in matched.items():
         for node_id in entry.node_ids:
             installed_claimants[node_id].add(installed_pack)
 
-    overlaps: list[Overlap] = []
+    shared_nodes: list[SharedNode] = []
     for node_id, packs in installed_claimants.items():
         if len(packs) < 2:
             continue
-        overlaps.append(
-            Overlap(
+        shared_nodes.append(
+            SharedNode(
                 node_id=node_id,
-                installed_claimants=tuple(sorted(packs, key=str.casefold)),
-                runtime_owner=runtime_owners.get(node_id),
+                installed_packs=tuple(sorted(packs, key=str.casefold)),
+                current_provider=current_providers.get(node_id),
                 workflow_files=tuple(sorted(active_usage.get(node_id, set()))),
                 inactive_workflow_files=tuple(
                     sorted(inactive_usage.get(node_id, set()))
@@ -398,7 +396,7 @@ def build_overlaps(
             )
         )
 
-    return sorted(overlaps, key=lambda item: item.node_id.casefold())
+    return sorted(shared_nodes, key=lambda item: item.node_id.casefold())
 
 
 def pack_workflow_usage(
@@ -418,32 +416,32 @@ def pack_workflow_usage(
     return pack_used_nodes, pack_workflows
 
 
-def pair_summaries(overlaps: list[Overlap]) -> list[PairSummary]:
-    grouped: dict[tuple[str, ...], list[Overlap]] = defaultdict(list)
-    for overlap in overlaps:
-        grouped[overlap.installed_claimants].append(overlap)
+def pair_summaries(shared_nodes: list[SharedNode]) -> list[PairSummary]:
+    grouped: dict[tuple[str, ...], list[SharedNode]] = defaultdict(list)
+    for item in shared_nodes:
+        grouped[item.installed_packs].append(item)
 
     summaries: list[PairSummary] = []
     for packs, items in grouped.items():
         used = [item for item in items if item.workflow_files]
-        owner_counts: dict[str, int] = defaultdict(int)
+        provider_counts: dict[str, int] = defaultdict(int)
         for item in used:
-            if item.runtime_owner is not None:
-                owner_counts[item.runtime_owner] += 1
+            if item.current_provider is not None:
+                provider_counts[item.current_provider] += 1
 
         summaries.append(
             PairSummary(
                 packs=packs,
-                overlap_count=len(items),
-                used_overlap_count=len(used),
-                used_registered_count=sum(
-                    1 for item in used if item.runtime_owner is not None
+                shared_count=len(items),
+                used_count=len(used),
+                working_used_count=sum(
+                    1 for item in used if item.current_provider is not None
                 ),
-                used_missing_count=sum(
-                    1 for item in used if item.runtime_owner is None
+                missing_used_count=sum(
+                    1 for item in used if item.current_provider is None
                 ),
-                owner_counts=tuple(
-                    sorted(owner_counts.items(), key=lambda pair: pair[0].casefold())
+                provider_counts=tuple(
+                    sorted(provider_counts.items(), key=lambda pair: pair[0].casefold())
                 ),
             )
         )
@@ -453,152 +451,196 @@ def pair_summaries(overlaps: list[Overlap]) -> list[PairSummary]:
 
 def technical_pack_stats(
     installed: list[str],
-    overlaps: list[Overlap],
+    shared_nodes: list[SharedNode],
 ) -> dict[str, dict[str, int]]:
     stats = {
         pack: {
-            "overlaps": 0,
-            "owns": 0,
-            "other_owner": 0,
-            "unregistered": 0,
-            "workflow_used_overlaps": 0,
+            "shared": 0,
+            "provides": 0,
+            "other_provider": 0,
+            "missing": 0,
+            "workflow_used_shared": 0,
         }
         for pack in installed
     }
 
-    for overlap in overlaps:
-        for pack in overlap.installed_claimants:
+    for item in shared_nodes:
+        for pack in item.installed_packs:
             if pack not in stats:
                 continue
-            stats[pack]["overlaps"] += 1
-            if overlap.runtime_owner is None:
-                stats[pack]["unregistered"] += 1
-            elif overlap.runtime_owner == pack:
-                stats[pack]["owns"] += 1
+            stats[pack]["shared"] += 1
+            if item.current_provider is None:
+                stats[pack]["missing"] += 1
+            elif item.current_provider == pack:
+                stats[pack]["provides"] += 1
             else:
-                stats[pack]["other_owner"] += 1
-            if overlap.workflow_files:
-                stats[pack]["workflow_used_overlaps"] += 1
+                stats[pack]["other_provider"] += 1
+            if item.workflow_files:
+                stats[pack]["workflow_used_shared"] += 1
 
     return stats
+
+
+def print_table(headers: tuple[str, ...], rows: list[tuple[str, ...]]) -> None:
+    if not rows:
+        return
+    widths = [len(value) for value in headers]
+    for row in rows:
+        for index, value in enumerate(row):
+            widths[index] = max(widths[index], len(value))
+
+    print("  ".join(value.ljust(widths[i]) for i, value in enumerate(headers)))
+    print("  ".join("-" * width for width in widths))
+    for row in rows:
+        print("  ".join(value.ljust(widths[i]) for i, value in enumerate(row)))
+
+
+def status_for_shared_node(item: SharedNode) -> str:
+    if item.current_provider is None:
+        return "PROBLEM"
+    return "OK"
 
 
 def print_plain_report(
     installed: list[str],
     matched: dict[ManagerEntry, str],
     pack_nodes: dict[str, set[str]],
-    overlaps: list[Overlap],
+    shared_nodes: list[SharedNode],
     active_usage: dict[str, set[str]],
     workflow_root: Path | None,
     workflow_errors: list[tuple[str, str]],
 ) -> None:
     installed_set = set(installed)
     matched_packs = set(matched.values())
-    runtime_packs = {pack for pack in pack_nodes if pack in installed_set}
+    running_packs = {pack for pack in pack_nodes if pack in installed_set}
     pack_used_nodes, pack_workflows = pack_workflow_usage(pack_nodes, active_usage)
-    pairs = pair_summaries(overlaps)
+    pairs = pair_summaries(shared_nodes)
 
-    used_overlaps = [item for item in overlaps if item.workflow_files]
-    missing_used = [
-        item for item in used_overlaps if item.runtime_owner is None
+    used_shared = [item for item in shared_nodes if item.workflow_files]
+    working_used = [item for item in used_shared if item.current_provider is not None]
+    missing_used = [item for item in used_shared if item.current_provider is None]
+
+    cleanup_candidates = [
+        pack
+        for pack in installed
+        if len(pack_nodes.get(pack, set())) > 0
+        and len(pack_used_nodes.get(pack, set())) == 0
     ]
 
     print("=== ComfyUI node-pack audit ===")
-    print(f"Installed node packs: {len(installed)}")
-    print(f"Running node packs detected: {len(runtime_packs)}")
-
-    if overlaps:
-        print(
-            "Overlapping node packs installed: YES "
-            f"({len(pairs)} pack pair{'s' if len(pairs) != 1 else ''}, "
-            f"{len(overlaps)} shared node names known to Manager)"
-        )
-    else:
-        print("Overlapping node packs installed: NO")
-
+    print(f"Installed node packs:                         {len(installed)}")
+    print(f"Running node packs detected:                  {len(running_packs)}")
+    print(f"Installed pack groups sharing node names:     {len(pairs)}")
+    print(f"Shared node names known to Manager:           {len(shared_nodes)}")
     if workflow_root is not None:
-        if used_overlaps:
-            print(
-                "Saved workflows use overlapping node names: YES "
-                f"({len(used_overlaps)} node names)"
-            )
-        else:
-            print("Saved workflows use overlapping node names: NO")
+        print(f"Shared node names used by saved workflows:    {len(used_shared)}")
+        print(f"  Working now:                                {len(working_used)}")
+        print(f"  Missing now:                                {len(missing_used)}")
+        print(f"Packs with no saved-workflow use found:        {len(cleanup_candidates)}")
+        print(f"Unreadable workflow files:                     {len(workflow_errors)}")
 
-        if missing_used:
-            print(
-                "Workflow-used overlapping nodes missing right now: YES "
-                f"({len(missing_used)})"
-            )
-        else:
-            print("Workflow-used overlapping nodes missing right now: NO")
-
-    print("\n=== What this means ===")
-    if not overlaps:
-        print("No installed pack pairs are known by Manager to share node names.")
+    print("\n=== Summary ===")
+    if not shared_nodes:
+        print("- OK: No installed pack groups are known by Manager to share node names.")
     else:
         for pair in pairs:
             names = " + ".join(pair.packs)
             if workflow_root is None:
-                print(
-                    f"- {names}: {pair.overlap_count} shared node names are known to Manager."
-                )
+                print(f"- REVIEW: {names} share {pair.shared_count} node names.")
                 continue
 
-            if pair.used_overlap_count == 0:
+            if pair.used_count == 0:
                 print(
-                    f"- REVIEW: {names} share {pair.overlap_count} node names, but none of "
+                    f"- REVIEW: {names} share {pair.shared_count} node names, but none of "
                     "those shared names are used by the saved workflows scanned."
                 )
                 continue
 
-            owner_text = ", ".join(
-                f"{owner} provides {count}"
-                for owner, count in pair.owner_counts
+            provider_text = ", ".join(
+                f"{provider} provides {count}"
+                for provider, count in pair.provider_counts
             )
-            if pair.used_missing_count:
+            if pair.missing_used_count:
                 print(
-                    f"- PROBLEM: {names} share {pair.overlap_count} node names. Saved "
-                    f"workflows use {pair.used_overlap_count}; {owner_text or 'no live owner found'}; "
-                    f"{pair.used_missing_count} workflow-used node name"
-                    f"{'s are' if pair.used_missing_count != 1 else ' is'} missing."
+                    f"- PROBLEM: {names} share {pair.shared_count} node names. Saved "
+                    f"workflows use {pair.used_count}; {provider_text or 'no current provider found'}; "
+                    f"{pair.missing_used_count} used node name"
+                    f"{'s are' if pair.missing_used_count != 1 else ' is'} missing."
                 )
             else:
                 print(
-                    f"- OK: {names} share {pair.overlap_count} node names. Saved workflows "
-                    f"use {pair.used_overlap_count}, and the running instance has a live owner "
-                    f"for all of them ({owner_text})."
+                    f"- OK: {names} share {pair.shared_count} node names. Saved workflows "
+                    f"use {pair.used_count}, and all are currently available "
+                    f"({provider_text})."
                 )
 
-    if workflow_root is not None:
-        print("\n=== Packs to review for cleanup ===")
-        candidates = [
-            pack
-            for pack in installed
-            if len(pack_nodes.get(pack, set())) > 0
-            and len(pack_used_nodes.get(pack, set())) == 0
-        ]
-        if not candidates:
-            print("Every running node pack has at least one live node used by a saved workflow.")
-        else:
-            for pack in candidates:
-                print(
-                    f"- {pack}: running, but none of its own live nodes are referenced by the "
-                    "saved workflows scanned."
+    if workflow_root is not None and used_shared:
+        print("\n=== Shared nodes used by saved workflows ===")
+        rows: list[tuple[str, ...]] = []
+        for item in sorted(
+            used_shared,
+            key=lambda value: (
+                0 if value.current_provider is None else 1,
+                tuple(pack.casefold() for pack in value.installed_packs),
+                value.node_id.casefold(),
+            ),
+        ):
+            rows.append(
+                (
+                    status_for_shared_node(item),
+                    " + ".join(item.installed_packs),
+                    item.node_id,
+                    item.current_provider or "MISSING",
+                    ", ".join(item.workflow_files),
                 )
-            print(
-                "These are review candidates only. They may still be used interactively, by "
-                "unsaved workflows, or through API-generated workflows."
             )
+        print_table(
+            ("Status", "Installed packs", "Node", "Current provider", "Saved workflows"),
+            rows,
+        )
 
     if missing_used:
         print("\n=== Needs attention ===")
-        for overlap in missing_used:
+        rows = [
+            (
+                " + ".join(item.installed_packs),
+                item.node_id,
+                "MISSING",
+                ", ".join(item.workflow_files),
+            )
+            for item in missing_used
+        ]
+        print_table(
+            ("Installed packs", "Node", "Current provider", "Saved workflows"),
+            rows,
+        )
+        print(
+            "These workflows reference a shared node name that the running ComfyUI "
+            "does not currently provide."
+        )
+
+    if workflow_root is not None:
+        print("\n=== Packs to review for cleanup ===")
+        if not cleanup_candidates:
+            print("No running node packs were found with zero saved-workflow usage.")
+        else:
+            rows = [
+                (
+                    pack,
+                    str(len(pack_nodes.get(pack, set()))),
+                    str(len(pack_used_nodes.get(pack, set()))),
+                    str(len(pack_workflows.get(pack, set()))),
+                    "No live nodes from this pack appear in the saved workflows scanned",
+                )
+                for pack in cleanup_candidates
+            ]
+            print_table(
+                ("Pack", "Live nodes", "Used nodes", "Workflow files", "Why review"),
+                rows,
+            )
             print(
-                f"- {overlap.node_id}: used by {len(overlap.workflow_files)} saved workflow"
-                f"{'s' if len(overlap.workflow_files) != 1 else ''}, but not registered by "
-                "the running ComfyUI. Manager associates it with installed packs: "
-                f"{', '.join(overlap.installed_claimants)}."
+                "Review only. A pack may still be used interactively, by unsaved workflows, "
+                "or by API-generated workflows."
             )
 
     if workflow_errors:
@@ -615,8 +657,8 @@ def print_plain_report(
         )
 
     print(
-        "\nNote: An overlap means Manager says two installed packs may provide the same "
-        "node name. It does not prove the overlap is causing a problem."
+        "\nNote: A shared node name means Manager says multiple installed packs may "
+        "provide that name. It does not by itself prove an active conflict."
     )
 
 
@@ -629,16 +671,16 @@ def print_verbose_report(
     matched: dict[ManagerEntry, str],
     ambiguous: dict[str, list[ManagerEntry]],
     pack_nodes: dict[str, set[str]],
-    overlaps: list[Overlap],
+    shared_nodes: list[SharedNode],
     active_usage: dict[str, set[str]],
     workflow_errors: list[tuple[str, str]],
     only_used_overlaps: bool,
 ) -> None:
     installed_set = set(installed)
     matched_packs = set(matched.values())
-    runtime_packs = {pack for pack in pack_nodes if pack in installed_set}
+    running_packs = {pack for pack in pack_nodes if pack in installed_set}
     pack_used_nodes, pack_workflows = pack_workflow_usage(pack_nodes, active_usage)
-    stats = technical_pack_stats(installed, overlaps)
+    stats = technical_pack_stats(installed, shared_nodes)
 
     print("\n=== Technical details ===")
     print(f"Custom nodes: {custom_nodes}")
@@ -647,38 +689,7 @@ def print_verbose_report(
     if workflow_root is not None:
         print(f"Workflows: {workflow_root}")
 
-    print("\n=== Technical summary ===")
-    print(f"Installed pack directories: {len(installed)}")
-    print(f"Matched to Manager map:     {len(matched_packs)}")
-    print(f"Runtime-registered packs:   {len(runtime_packs)}")
-    print(f"Manager-known overlaps:     {len(overlaps)}")
-    print(
-        "Registered overlap IDs:    "
-        f"{sum(1 for item in overlaps if item.runtime_owner is not None)}"
-    )
-    print(
-        "Unregistered overlap IDs:  "
-        f"{sum(1 for item in overlaps if item.runtime_owner is None)}"
-    )
-    if workflow_root is not None:
-        print(
-            "Workflow-used overlaps:   "
-            f"{sum(1 for item in overlaps if item.workflow_files)}"
-        )
-        print(f"Workflow read errors:       {len(workflow_errors)}")
-
     print("\n=== Per-pack technical statistics ===")
-    header = (
-        "Pack",
-        "Live",
-        "Used",
-        "WFs",
-        "Overlap",
-        "Own",
-        "Other",
-        "Missing",
-        "UsedOv",
-    )
     rows = []
     for pack in installed:
         rows.append(
@@ -687,50 +698,55 @@ def print_verbose_report(
                 str(len(pack_nodes.get(pack, set()))),
                 str(len(pack_used_nodes.get(pack, set()))),
                 str(len(pack_workflows.get(pack, set()))),
-                str(stats[pack]["overlaps"]),
-                str(stats[pack]["owns"]),
-                str(stats[pack]["other_owner"]),
-                str(stats[pack]["unregistered"]),
-                str(stats[pack]["workflow_used_overlaps"]),
+                str(stats[pack]["shared"]),
+                str(stats[pack]["provides"]),
+                str(stats[pack]["other_provider"]),
+                str(stats[pack]["missing"]),
+                str(stats[pack]["workflow_used_shared"]),
             )
         )
+    print_table(
+        (
+            "Pack",
+            "Live",
+            "Used",
+            "WFs",
+            "Shared",
+            "Provides",
+            "Other",
+            "Missing",
+            "UsedShared",
+        ),
+        rows,
+    )
+    print(
+        f"Manager-matched packs: {len(matched_packs)} | "
+        f"Running packs: {len(running_packs)}"
+    )
 
-    widths = [len(value) for value in header]
-    for row in rows:
-        for index, value in enumerate(row):
-            widths[index] = max(widths[index], len(value))
-
-    print("  ".join(value.ljust(widths[i]) for i, value in enumerate(header)))
-    print("  ".join("-" * width for width in widths))
-    for row in rows:
-        print("  ".join(value.ljust(widths[i]) for i, value in enumerate(row)))
-
-    print("\n=== Per-node overlap details ===")
+    print("\n=== Per-node shared-name details ===")
     selected = (
-        [item for item in overlaps if item.workflow_files]
+        [item for item in shared_nodes if item.workflow_files]
         if only_used_overlaps
-        else overlaps
+        else shared_nodes
     )
     if not selected:
-        print("No matching overlap details to show.")
+        print("No matching shared-node details to show.")
     else:
-        for overlap in selected:
-            print(f"\n{overlap.node_id}")
-            print(f"  Installed Manager claimants: {', '.join(overlap.installed_claimants)}")
-            print(
-                "  Current runtime owner: "
-                f"{overlap.runtime_owner if overlap.runtime_owner else 'not registered'}"
-            )
+        for item in selected:
+            print(f"\n{item.node_id}")
+            print(f"  Installed packs: {', '.join(item.installed_packs)}")
+            print(f"  Current provider: {item.current_provider or 'MISSING'}")
             if workflow_root is not None:
-                print(f"  Active saved workflows: {len(overlap.workflow_files)}")
-                for filename in overlap.workflow_files:
+                print(f"  Active saved workflows: {len(item.workflow_files)}")
+                for filename in item.workflow_files:
                     print(f"    - {filename}")
-                if overlap.inactive_workflow_files:
+                if item.inactive_workflow_files:
                     print(
                         "  Muted/bypassed-only saved workflows: "
-                        f"{len(overlap.inactive_workflow_files)}"
+                        f"{len(item.inactive_workflow_files)}"
                     )
-                    for filename in overlap.inactive_workflow_files:
+                    for filename in item.inactive_workflow_files:
                         print(f"    - {filename}")
 
     if ambiguous:
@@ -755,16 +771,16 @@ def json_report(
     matched: dict[ManagerEntry, str],
     ambiguous: dict[str, list[ManagerEntry]],
     pack_nodes: dict[str, set[str]],
-    overlaps: list[Overlap],
+    shared_nodes: list[SharedNode],
     active_usage: dict[str, set[str]],
     workflow_errors: list[tuple[str, str]],
 ) -> dict[str, Any]:
     installed_set = set(installed)
     matched_packs = set(matched.values())
-    runtime_packs = {pack for pack in pack_nodes if pack in installed_set}
+    running_packs = {pack for pack in pack_nodes if pack in installed_set}
     pack_used_nodes, pack_workflows = pack_workflow_usage(pack_nodes, active_usage)
-    stats = technical_pack_stats(installed, overlaps)
-    pairs = pair_summaries(overlaps)
+    stats = technical_pack_stats(installed, shared_nodes)
+    pairs = pair_summaries(shared_nodes)
 
     return {
         "sources": {
@@ -776,16 +792,21 @@ def json_report(
         "summary": {
             "installed_packs": len(installed),
             "manager_matched_packs": len(matched_packs),
-            "runtime_registered_packs": len(runtime_packs),
-            "installed_pack_groups_with_overlaps": len(pairs),
-            "manager_known_overlap_node_ids": len(overlaps),
-            "workflow_used_overlap_node_ids": sum(
-                1 for item in overlaps if item.workflow_files
+            "running_packs": len(running_packs),
+            "installed_pack_groups_with_shared_node_names": len(pairs),
+            "shared_node_names": len(shared_nodes),
+            "workflow_used_shared_node_names": sum(
+                1 for item in shared_nodes if item.workflow_files
             ),
-            "workflow_used_missing_overlap_node_ids": sum(
+            "workflow_used_working_shared_node_names": sum(
                 1
-                for item in overlaps
-                if item.workflow_files and item.runtime_owner is None
+                for item in shared_nodes
+                if item.workflow_files and item.current_provider is not None
+            ),
+            "workflow_used_missing_shared_node_names": sum(
+                1
+                for item in shared_nodes
+                if item.workflow_files and item.current_provider is None
             ),
             "workflow_errors": len(workflow_errors),
         },
@@ -802,28 +823,28 @@ def json_report(
             }
             for pack in installed
         ],
-        "overlap_groups": [
+        "shared_node_groups": [
             {
                 "packs": list(pair.packs),
-                "overlap_count": pair.overlap_count,
-                "workflow_used_overlap_count": pair.used_overlap_count,
-                "workflow_used_registered_count": pair.used_registered_count,
-                "workflow_used_missing_count": pair.used_missing_count,
-                "runtime_owner_counts": dict(pair.owner_counts),
+                "shared_count": pair.shared_count,
+                "workflow_used_count": pair.used_count,
+                "workflow_used_working_count": pair.working_used_count,
+                "workflow_used_missing_count": pair.missing_used_count,
+                "current_provider_counts": dict(pair.provider_counts),
             }
             for pair in pairs
         ],
-        "overlaps": [
+        "shared_nodes": [
             {
                 "node_id": item.node_id,
-                "installed_manager_claimants": list(item.installed_claimants),
-                "runtime_owner": item.runtime_owner,
+                "installed_packs": list(item.installed_packs),
+                "current_provider": item.current_provider,
                 "workflow_count": len(item.workflow_files),
                 "workflow_files": list(item.workflow_files),
                 "inactive_workflow_count": len(item.inactive_workflow_files),
                 "inactive_workflow_files": list(item.inactive_workflow_files),
             }
-            for item in overlaps
+            for item in shared_nodes
         ],
         "ambiguous_manager_matches": {
             pack: [
@@ -852,7 +873,7 @@ def main() -> int:
         entries = load_manager_entries(manager_map)
         matched, ambiguous = match_entries_to_installed(entries, installed)
         object_info = load_object_info(url)
-        runtime_owners, pack_nodes = runtime_node_owners(object_info)
+        current_providers, pack_nodes = runtime_node_owners(object_info)
 
         active_usage: dict[str, set[str]] = {}
         inactive_usage: dict[str, set[str]] = {}
@@ -860,9 +881,9 @@ def main() -> int:
         if workflow_root is not None:
             active_usage, inactive_usage, workflow_errors = workflow_usage(workflow_root)
 
-        overlaps = build_overlaps(
+        shared_nodes = build_shared_nodes(
             matched,
-            runtime_owners,
+            current_providers,
             active_usage,
             inactive_usage,
         )
@@ -880,7 +901,7 @@ def main() -> int:
             matched,
             ambiguous,
             pack_nodes,
-            overlaps,
+            shared_nodes,
             active_usage,
             workflow_errors,
         )
@@ -891,7 +912,7 @@ def main() -> int:
         installed,
         matched,
         pack_nodes,
-        overlaps,
+        shared_nodes,
         active_usage,
         workflow_root,
         workflow_errors,
@@ -907,7 +928,7 @@ def main() -> int:
             matched,
             ambiguous,
             pack_nodes,
-            overlaps,
+            shared_nodes,
             active_usage,
             workflow_errors,
             args.only_used_overlaps,
