@@ -3,16 +3,17 @@
 
 The default report is decision-oriented:
 
-1. Which node types used by saved workflows are missing from the running ComfyUI?
+1. Which active node types used by saved workflows are missing from the running ComfyUI?
 2. Which node pack does the workflow itself say each missing node came from?
-3. Which model files selected by saved workflows are unavailable to the running ComfyUI?
-4. Which installed packs are associated by Manager with the same NODE_CLASS_MAPPINGS key?
-5. When scanning the full workflow directory, which running packs appear unused?
+3. Which model files referenced by saved workflows are unavailable to the running ComfyUI?
+4. Are those missing model references active, muted, or bypassed?
+5. Which installed packs are associated by Manager with the same NODE_CLASS_MAPPINGS key?
+6. When scanning the full workflow directory, which running packs appear unused?
 
 ComfyUI Manager's extension-node-map.json is advisory static-analysis metadata.
 Workflow-embedded ``properties.cnr_id`` and ``properties.ver`` are preferred when
 identifying the pack/version a saved workflow expected. The running /object_info
-registry is authoritative for backend node availability and for the model choices
+registry is authoritative for backend node availability and for model choices
 currently exposed by registered loader nodes.
 """
 
@@ -61,6 +62,7 @@ class ModelOccurrence:
     input_name: str
     category: str
     filename: str
+    mode: int
 
 
 @dataclass(frozen=True)
@@ -333,9 +335,8 @@ def manager_candidates_by_node(
 def match_manager_entries_to_installed(
     entries: Iterable[ManagerEntry], installed: Iterable[str]
 ) -> dict[ManagerEntry, str]:
-    installed_list = list(installed)
     by_normalized: dict[str, list[str]] = defaultdict(list)
-    for pack in installed_list:
+    for pack in installed:
         by_normalized[normalize_pack_name(pack)].append(pack)
 
     matched: dict[ManagerEntry, str] = {}
@@ -375,7 +376,7 @@ def workflow_paths(root: Path, selected: list[str]) -> list[Path]:
 
 
 def workflow_node_dicts(data: Any) -> Iterable[dict[str, Any]]:
-    """Yield executable nodes from the primary workflow graph only."""
+    """Yield nodes from the primary workflow graph only."""
     if isinstance(data, dict) and isinstance(data.get("nodes"), list):
         for node in data["nodes"]:
             if isinstance(node, dict) and isinstance(node.get("type"), str):
@@ -398,6 +399,14 @@ def workflow_node_dicts(data: Any) -> Iterable[dict[str, Any]]:
 
 def clean_optional_string(value: Any) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def mode_label(mode: int) -> str:
+    if mode == 2:
+        return "MUTED"
+    if mode == 4:
+        return "BYPASSED"
+    return "ACTIVE"
 
 
 def model_category(input_name: str, node_type: str) -> str | None:
@@ -484,6 +493,7 @@ def missing_models_for_node(
     workflow: str,
     node: dict[str, Any],
     info: dict[str, Any],
+    mode: int,
 ) -> list[ModelOccurrence]:
     widgets = node.get("widgets_values")
     if not isinstance(widgets, list):
@@ -516,6 +526,7 @@ def missing_models_for_node(
                     input_name=input_name,
                     category=category,
                     filename=selected,
+                    mode=mode,
                 )
             )
 
@@ -551,9 +562,21 @@ def scan_workflows(
             node_type = node.get("type")
             if not isinstance(node_type, str) or node_type in FRONTEND_ONLY_NODE_TYPES:
                 continue
+
             mode = node.get("mode", 0)
             if not isinstance(mode, int):
                 mode = 0
+
+            info = object_info.get(node_type)
+            if info is not None:
+                # Model references are checked even when the node is muted/bypassed.
+                # Manager's workflow overview reports these references too, but the
+                # occurrence mode lets us distinguish current execution impact.
+                missing_models.extend(
+                    missing_models_for_node(relative, node, info, mode)
+                )
+
+            # Missing backend node execution errors are intentionally active-only.
             if mode in INACTIVE_NODE_MODES:
                 continue
 
@@ -573,12 +596,8 @@ def scan_workflows(
             active_usage[node_type].add(relative)
             active_occurrences[node_type].append(occurrence)
 
-            info = object_info.get(node_type)
             if info is None:
                 missing_occurrences[node_type].append(occurrence)
-                continue
-
-            missing_models.extend(missing_models_for_node(relative, node, info))
 
     return (
         active_usage,
@@ -751,6 +770,20 @@ def pack_workflow_usage(
     return used_nodes, workflows
 
 
+def model_reference_counts(models: list[MissingModel]) -> tuple[int, int, int]:
+    total = 0
+    active = 0
+    inactive = 0
+    for model in models:
+        for occurrence in model.occurrences:
+            total += 1
+            if occurrence.mode in INACTIVE_NODE_MODES:
+                inactive += 1
+            else:
+                active += 1
+    return total, active, inactive
+
+
 def print_overview(
     installed: list[str],
     pack_nodes: dict[str, set[str]],
@@ -766,11 +799,12 @@ def print_overview(
     running_packs = {pack for pack in pack_nodes if pack in installed_set}
     used_collisions = [item for item in collisions if item.workflow_files]
     missing_node_instances = sum(len(items) for items in missing_occurrences.values())
-    missing_model_references = sum(len(item.occurrences) for item in missing_models)
+    model_refs, active_model_refs, inactive_model_refs = model_reference_counts(missing_models)
     known_missing_packs = {
         dep.display_pack for dep in missing_dependencies if dep.display_pack != "UNKNOWN"
     }
-    total_detected_errors = missing_node_instances + missing_model_references
+    active_path_errors = missing_node_instances + active_model_refs
+    total_detected_issues = missing_node_instances + model_refs
 
     print("=== ComfyUI workflow audit ===")
     print(f"Installed node packs:                    {len(installed)}")
@@ -781,8 +815,11 @@ def print_overview(
     print(f"Missing active node instances:           {missing_node_instances}")
     print(f"Intended missing pack IDs found:         {len(known_missing_packs)}")
     print(f"Distinct missing model files:            {len(missing_models)}")
-    print(f"Missing model references:                {missing_model_references}")
-    print(f"Total detected workflow errors:          {total_detected_errors}")
+    print(f"Missing model references:                {model_refs}")
+    print(f"  Active:                                {active_model_refs}")
+    print(f"  Muted/bypassed:                        {inactive_model_refs}")
+    print(f"Active-path errors:                      {active_path_errors}")
+    print(f"Total detected issues:                   {total_detected_issues}")
     print(f"Potential installed node-ID collisions:  {len(collisions)}")
     print(f"Collision IDs used by saved workflows:   {len(used_collisions)}")
     print(f"Unreadable workflow files:               {len(workflow_errors)}")
@@ -795,6 +832,7 @@ def print_plain_summary(
     collisions: list[Collision],
 ) -> None:
     used_collisions = [item for item in collisions if item.workflow_files]
+    _, active_model_refs, inactive_model_refs = model_reference_counts(missing_models)
     print("\n=== Summary ===")
 
     if missing_occurrences:
@@ -823,14 +861,18 @@ def print_plain_summary(
     else:
         print("- OK: No active workflow node types are missing from the running ComfyUI.")
 
-    if missing_models:
-        references = sum(len(item.occurrences) for item in missing_models)
+    if active_model_refs:
         print(
-            f"- PROBLEM: {len(missing_models)} model file"
-            f"{'s are' if len(missing_models) != 1 else ' is'} unavailable "
-            f"({references} workflow reference{'s' if references != 1 else ''})."
+            f"- PROBLEM: {active_model_refs} missing model reference"
+            f"{'s are' if active_model_refs != 1 else ' is'} on the active execution path."
         )
-    else:
+    if inactive_model_refs:
+        print(
+            f"- REVIEW: {inactive_model_refs} missing model reference"
+            f"{'s are' if inactive_model_refs != 1 else ' is'} only in muted/bypassed nodes. "
+            "Manager may still report these, but they do not currently block the active path."
+        )
+    if not missing_models:
         print("- OK: No missing model files were detected in registered loader nodes.")
 
     if used_collisions:
@@ -885,7 +927,7 @@ def print_missing_dependencies(dependencies: list[MissingDependency]) -> None:
 
         print("  What is actually wrong:")
         print("    The running ComfyUI does not register the node ID(s) above, so these")
-        print("    workflow nodes cannot execute as currently saved.")
+        print("    active workflow nodes cannot execute as currently saved.")
         print("  Most likely next step:")
         if dep.display_pack == "UNKNOWN":
             print("    Identify the original pack, then install/restore a compatible version")
@@ -907,7 +949,20 @@ def print_missing_models(models: list[MissingModel]) -> None:
 
     for model in models:
         label = model_category_label(model.category)
+        active = [occ for occ in model.occurrences if occ.mode not in INACTIVE_NODE_MODES]
+        inactive = [occ for occ in model.occurrences if occ.mode in INACTIVE_NODE_MODES]
+
+        if active:
+            state = "ACTIVE"
+        elif all(occ.mode == 4 for occ in inactive):
+            state = "BYPASSED"
+        elif all(occ.mode == 2 for occ in inactive):
+            state = "MUTED"
+        else:
+            state = "INACTIVE"
+
         print(f"\n[MISSING {label.upper()}] {model.filename}")
+        print(f"  State: {state}")
         print(f"  Category: {label}")
         print("  Saved workflows:")
         for workflow in model.workflows:
@@ -916,11 +971,19 @@ def print_missing_models(models: list[MissingModel]) -> None:
         for occurrence in model.occurrences:
             print(
                 f"    - {occurrence.node_type} "
-                f"(workflow node {occurrence.workflow_node_id}, input {occurrence.input_name})"
+                f"(workflow node {occurrence.workflow_node_id}, "
+                f"input {occurrence.input_name}, {mode_label(occurrence.mode)})"
             )
         print("  What is actually wrong:")
         print("    The workflow selects this file, but the running loader node does not")
         print("    list it among the model choices currently available to ComfyUI.")
+        print("  Impact:")
+        if active:
+            print("    At least one active node references this missing model, so it can block")
+            print("    the workflow's current execution path.")
+        else:
+            print("    All references are muted/bypassed, so this does not currently block")
+            print("    the active execution path. It will matter if those nodes are enabled.")
         print("  Most likely next step:")
         print(
             f"    Add/restore the file in a configured {label} model path, or select "
@@ -1027,7 +1090,7 @@ def json_report(
 ) -> dict[str, Any]:
     running = {pack for pack in pack_nodes if pack in set(installed)}
     missing_node_instances = sum(len(v) for v in missing_occurrences.values())
-    missing_model_references = sum(len(item.occurrences) for item in missing_models)
+    model_refs, active_model_refs, inactive_model_refs = model_reference_counts(missing_models)
 
     return {
         "summary": {
@@ -1039,8 +1102,11 @@ def json_report(
             "missing_active_node_instances": missing_node_instances,
             "missing_dependency_groups": len(dependencies),
             "distinct_missing_model_files": len(missing_models),
-            "missing_model_references": missing_model_references,
-            "total_detected_workflow_errors": missing_node_instances + missing_model_references,
+            "missing_model_references": model_refs,
+            "active_missing_model_references": active_model_refs,
+            "inactive_missing_model_references": inactive_model_refs,
+            "active_path_errors": missing_node_instances + active_model_refs,
+            "total_detected_issues": missing_node_instances + model_refs,
             "potential_collision_ids": len(collisions),
             "workflow_used_collision_ids": sum(1 for c in collisions if c.workflow_files),
             "workflow_errors": len(workflow_errors),
@@ -1077,6 +1143,8 @@ def json_report(
                         "workflow_node_id": occ.workflow_node_id,
                         "node_type": occ.node_type,
                         "input_name": occ.input_name,
+                        "mode": occ.mode,
+                        "state": mode_label(occ.mode),
                     }
                     for occ in model.occurrences
                 ],
