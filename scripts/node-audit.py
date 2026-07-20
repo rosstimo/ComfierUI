@@ -17,7 +17,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -86,7 +86,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--only-used-overlaps",
         action="store_true",
-        help="with --workflows, print only overlaps referenced by active saved workflows",
+        help=(
+            "with --workflows and --verbose, show only overlaps referenced by "
+            "active saved workflows; compact output already focuses on used overlaps"
+        ),
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="append full per-overlap details and workflow filenames",
     )
     parser.add_argument(
         "--json",
@@ -400,6 +408,44 @@ def pack_overlap_stats(
     return stats
 
 
+def print_table(headers: list[str], rows: list[list[str]]) -> None:
+    widths = [len(header) for header in headers]
+    for row in rows:
+        for index, cell in enumerate(row):
+            widths[index] = max(widths[index], len(cell))
+
+    print("  ".join(header.ljust(widths[i]) for i, header in enumerate(headers)))
+    print("  ".join("-" * width for width in widths))
+    for row in rows:
+        print("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)))
+
+
+def compact_overlap_groups(overlaps: list[Overlap]) -> list[list[str]]:
+    grouped: dict[tuple[str, ...], list[Overlap]] = defaultdict(list)
+    for overlap in overlaps:
+        if overlap.workflow_files:
+            grouped[overlap.installed_claimants].append(overlap)
+
+    rows: list[list[str]] = []
+    for claimants, items in sorted(grouped.items(), key=lambda pair: pair[0]):
+        owners = Counter(
+            item.runtime_owner for item in items if item.runtime_owner is not None
+        )
+        owner_text = ", ".join(
+            f"{owner}:{count}" for owner, count in sorted(owners.items())
+        ) or "-"
+        unregistered = sum(1 for item in items if item.runtime_owner is None)
+        rows.append(
+            [
+                " <> ".join(claimants),
+                str(len(items)),
+                owner_text,
+                str(unregistered),
+            ]
+        )
+    return rows
+
+
 def json_report(
     custom_nodes: Path,
     manager_map: Path,
@@ -418,6 +464,18 @@ def json_report(
     runtime_packs = {pack for pack in pack_nodes if pack in installed_set}
     pack_used_nodes, pack_workflows = pack_workflow_usage(pack_nodes, active_usage)
     stats = pack_overlap_stats(installed, overlaps)
+    unresolved_used = [
+        overlap
+        for overlap in overlaps
+        if overlap.workflow_files and overlap.runtime_owner is None
+    ]
+    review_candidates = [
+        pack
+        for pack in installed
+        if workflow_root is not None
+        and pack_nodes.get(pack)
+        and not pack_used_nodes.get(pack)
+    ]
 
     return {
         "sources": {
@@ -440,6 +498,7 @@ def json_report(
             "workflow_used_overlap_node_ids": sum(
                 1 for overlap in overlaps if overlap.workflow_files
             ),
+            "workflow_used_unregistered_overlap_node_ids": len(unresolved_used),
             "workflow_errors": len(workflow_errors),
         },
         "packs": [
@@ -455,6 +514,7 @@ def json_report(
             }
             for pack in installed
         ],
+        "review_candidates": review_candidates,
         "overlaps": [
             {
                 "node_id": overlap.node_id,
@@ -478,19 +538,14 @@ def json_report(
     }
 
 
-def print_human_report(
-    custom_nodes: Path,
-    manager_map: Path,
-    url: str,
+def print_compact_report(
     workflow_root: Path | None,
     installed: list[str],
     matched: dict[ManagerEntry, str],
-    ambiguous: dict[str, list[ManagerEntry]],
     pack_nodes: dict[str, set[str]],
     overlaps: list[Overlap],
     active_usage: dict[str, set[str]],
     workflow_errors: list[tuple[str, str]],
-    only_used_overlaps: bool,
 ) -> None:
     installed_set = set(installed)
     matched_packs = set(matched.values())
@@ -498,58 +553,109 @@ def print_human_report(
     pack_used_nodes, pack_workflows = pack_workflow_usage(pack_nodes, active_usage)
     stats = pack_overlap_stats(installed, overlaps)
 
+    registered_overlaps = sum(
+        1 for overlap in overlaps if overlap.runtime_owner is not None
+    )
+    unregistered_overlaps = len(overlaps) - registered_overlaps
+    used_overlaps = [overlap for overlap in overlaps if overlap.workflow_files]
+    unresolved_used = [
+        overlap for overlap in used_overlaps if overlap.runtime_owner is None
+    ]
+
+    print("=== Node audit ===")
+    print(
+        f"Packs: {len(installed)} installed | {len(matched_packs)} Manager-matched | "
+        f"{len(runtime_packs)} runtime-registered"
+    )
+    print(
+        f"Manager overlaps: {len(overlaps)} known | {registered_overlaps} registered | "
+        f"{unregistered_overlaps} unregistered"
+    )
+    if workflow_root is not None:
+        print(
+            f"Workflow-used overlaps: {len(used_overlaps)} | "
+            f"unregistered and used: {len(unresolved_used)} | "
+            f"workflow read errors: {len(workflow_errors)}"
+        )
+
+    print("\n=== Packs ===")
+    headers = ["Pack", "Live", "Used", "WFs", "MapOv", "Own", "Other", "Unreg", "UsedOv"]
+    rows: list[list[str]] = []
+    for pack in installed:
+        rows.append(
+            [
+                pack,
+                str(len(pack_nodes.get(pack, set()))),
+                str(len(pack_used_nodes.get(pack, set()))) if workflow_root else "-",
+                str(len(pack_workflows.get(pack, set()))) if workflow_root else "-",
+                str(stats[pack]["manager_overlaps"]),
+                str(stats[pack]["runtime_wins"]),
+                str(stats[pack]["other_owner"]),
+                str(stats[pack]["unregistered"]),
+                str(stats[pack]["workflow_used"]) if workflow_root else "-",
+            ]
+        )
+    print_table(headers, rows)
+    print("Live=runtime nodes; Used=saved-workflow-used live nodes; WFs=workflow files")
+    print("MapOv=Manager-known overlaps; Own/Other/Unreg=current runtime ownership; UsedOv=workflow-used overlaps")
+
+    if workflow_root is not None:
+        group_rows = compact_overlap_groups(overlaps)
+        print("\n=== Workflow-relevant overlap groups ===")
+        if group_rows:
+            print_table(
+                ["Installed Manager claimants", "UsedOv", "Runtime owner counts", "Unreg"],
+                group_rows,
+            )
+        else:
+            print("None.")
+
+        if unresolved_used:
+            print("\n=== Needs attention ===")
+            for overlap in unresolved_used:
+                print(
+                    f"{overlap.node_id}: unregistered; workflows={len(overlap.workflow_files)}; "
+                    f"claimants={', '.join(overlap.installed_claimants)}"
+                )
+
+        review_candidates = [
+            pack
+            for pack in installed
+            if pack_nodes.get(pack) and not pack_used_nodes.get(pack)
+        ]
+        if review_candidates:
+            print("\n=== Cleanup review candidates ===")
+            print("No active saved-workflow references were found for these packs' live nodes:")
+            for pack in review_candidates:
+                print(f"  - {pack} ({len(pack_nodes.get(pack, set()))} live nodes)")
+            print("Review only; this does not prove the pack is unused interactively or by unsaved/API workflows.")
+
+
+def print_verbose_report(
+    custom_nodes: Path,
+    manager_map: Path,
+    url: str,
+    workflow_root: Path | None,
+    ambiguous: dict[str, list[ManagerEntry]],
+    overlaps: list[Overlap],
+    workflow_errors: list[tuple[str, str]],
+    only_used_overlaps: bool,
+) -> None:
+    print("\n=== Sources ===")
     print(f"Custom nodes: {custom_nodes}")
     print(f"Manager map: {manager_map}")
     print(f"Runtime registry: {url}")
     if workflow_root is not None:
         print(f"Workflows: {workflow_root}")
 
-    print("\n=== Summary ===")
-    print(f"Installed node-pack directories:       {len(installed)}")
-    print(f"Matched to Manager node map:           {len(matched_packs)}")
-    print(f"Runtime-registered node packs:         {len(runtime_packs)}")
-    print(f"Manager-known installed overlap IDs:   {len(overlaps)}")
-    print(
-        "Runtime-registered overlap IDs:       "
-        f"{sum(1 for overlap in overlaps if overlap.runtime_owner is not None)}"
-    )
-    print(
-        "Unregistered Manager overlap IDs:     "
-        f"{sum(1 for overlap in overlaps if overlap.runtime_owner is None)}"
-    )
-    if workflow_root is not None:
-        print(
-            "Workflow-used overlap IDs:           "
-            f"{sum(1 for overlap in overlaps if overlap.workflow_files)}"
-        )
-        print(f"Unreadable workflow files:             {len(workflow_errors)}")
-
-    print("\n=== Installed pack summary ===")
-    for pack in installed:
-        print(pack)
-        print(f"  Manager map match:                  {'yes' if pack in matched_packs else 'no'}")
-        print(f"  Runtime registered nodes:           {len(pack_nodes.get(pack, set()))}")
-        if workflow_root is not None:
-            print(f"  Workflow-used runtime nodes:        {len(pack_used_nodes.get(pack, set()))}")
-            print(f"  Workflow files using runtime nodes: {len(pack_workflows.get(pack, set()))}")
-        print(f"  Manager overlaps with installed:    {stats[pack]['manager_overlaps']}")
-        print(f"  Current runtime owner wins:         {stats[pack]['runtime_wins']}")
-        print(f"  Current owner is another pack:      {stats[pack]['other_owner']}")
-        print(f"  Overlap IDs currently unregistered: {stats[pack]['unregistered']}")
-        if workflow_root is not None:
-            print(f"  Workflow-used overlap IDs:          {stats[pack]['workflow_used']}")
-
-    print("\n=== Manager-known overlaps between installed packs ===")
+    print("\n=== Overlap details ===")
     selected = (
         [overlap for overlap in overlaps if overlap.workflow_files]
         if only_used_overlaps
         else overlaps
     )
     if not selected:
-        if only_used_overlaps:
-            print("No active saved workflows use a Manager-known installed overlap.")
-        else:
-            print("No Manager-known node-ID overlaps were found between installed packs.")
+        print("None.")
     else:
         for overlap in selected:
             print(f"\n{overlap.node_id}")
@@ -637,21 +743,30 @@ def main() -> int:
             workflow_errors,
         )
         print(json.dumps(report, indent=2, sort_keys=True))
-    else:
-        print_human_report(
+        return 0
+
+    print_compact_report(
+        workflow_root,
+        installed,
+        matched,
+        pack_nodes,
+        overlaps,
+        active_usage,
+        workflow_errors,
+    )
+
+    if args.verbose:
+        print_verbose_report(
             custom_nodes,
             manager_map,
             url,
             workflow_root,
-            installed,
-            matched,
             ambiguous,
-            pack_nodes,
             overlaps,
-            active_usage,
             workflow_errors,
             args.only_used_overlaps,
         )
+
     return 0
 
 
