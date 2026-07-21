@@ -1,0 +1,35 @@
+** ComfyUI startup time: 2026-07-20 08:00:00
+Python version: 3.12.3 [GCC]
+ComfyUI version: 0.28.0
+[WARNING] Traceback (most recent call last):
+  File "/opt/ComfyUI/custom_nodes/old-pack/__init__.py", line 1, in <module>
+    import gone
+ModuleNotFoundError: No module named 'gone'
+[WARNING] Cannot import /opt/ComfyUI/custom_nodes/old-pack module for custom nodes: No module named 'gone'
+[INFO] 0.0 seconds (IMPORT FAILED): /opt/ComfyUI/custom_nodes/old-pack
+** ComfyUI startup time: 2026-07-21 04:25:21
+Python version: 3.12.3 (main, Jun 19 2026) [GCC]
+ComfyUI version: 0.28.0
+[INFO] ### Loading: ComfyUI-Manager (V4.2.2)
+[INFO] Extracted zip file to /opt/ComfyUI/custom_nodes/alpha-pack
+[WARNING] Traceback (most recent call last):
+  File "/opt/ComfyUI/custom_nodes/alpha-pack/__init__.py", line 3, in <module>
+    from AlphaNodes import NODE_CLASS_MAPPINGS
+ModuleNotFoundError: No module named 'AlphaNodes'
+[WARNING] Cannot import /opt/ComfyUI/custom_nodes/alpha-pack module for custom nodes: No module named 'AlphaNodes'
+[WARNING] Traceback (most recent call last):
+  File "/opt/ComfyUI/custom_nodes/beta-pack/__init__.py", line 10, in <module>
+    init()
+  File "/opt/ComfyUI/custom_nodes/beta-pack/setup_frontend.py", line 9, in init
+    os.makedirs('/opt/ComfyUI/web/extensions/beta')
+PermissionError: [Errno 13] Permission denied: '/opt/ComfyUI/web'
+[WARNING] Cannot import /opt/ComfyUI/custom_nodes/beta-pack module for custom nodes: [Errno 13] Permission denied: '/opt/ComfyUI/web'
+[WARNING] Traceback (most recent call last):
+  File "/opt/ComfyUI/custom_nodes/gamma-pack/__init__.py", line 1, in <module>
+    explode()
+RuntimeError: something unexpected happened
+[WARNING] Cannot import /opt/ComfyUI/custom_nodes/gamma-pack module for custom nodes: something unexpected happened
+[INFO] 0.0 seconds: /opt/ComfyUI/custom_nodes/working-pack
+[INFO] 0.0 seconds (IMPORT FAILED): /opt/ComfyUI/custom_nodes/alpha-pack
+[INFO] 0.0 seconds (IMPORT FAILED): /opt/ComfyUI/custom_nodes/beta-pack
+[INFO] 0.0 seconds (IMPORT FAILED): /opt/ComfyUI/custom_nodes/gamma-pack
