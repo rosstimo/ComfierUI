@@ -88,6 +88,9 @@ COMFYUI_BACKUP_INTERVAL_HOURS=24
 
 # Retry a failed automatic backup after one hour.
 COMFYUI_BACKUP_RETRY_MINUTES=60
+
+# Manual backups wait this long for an in-progress ComfyUI startup.
+COMFYUI_BACKUP_READY_TIMEOUT_SECONDS=300
 ```
 
 ## What is included
@@ -220,7 +223,9 @@ manual backup from capturing or writing snapshots simultaneously.
 
 The running ComfyUI container writes authoritative runtime/build state. The
 recovery blueprint consumes that state instead of guessing effective versions
-from `.env`.
+from `.env`. If a manual backup begins while ComfyUI is still starting, the host
+helper waits for the health check before stopping it. State capture also warns
+when it finds a runtime record from an older schema after an image update.
 
 Inventories are a roadmap, not proof that excluded files are stored in restic. See [Recovery blueprint](RECOVERY_BLUEPRINT.md).
 
@@ -270,6 +275,8 @@ Shows backup services and recent backup logs.
 Creates a consistent manual recovery point:
 
 ```text
+wait for an in-progress ComfyUI startup
+        ↓
 stop ComfyUI if running
         ↓
 create encrypted snapshot
