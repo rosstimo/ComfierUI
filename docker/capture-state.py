@@ -416,13 +416,19 @@ def main() -> int:
     warnings: list[str] = []
     captured_at = datetime.now(timezone.utc)
     node_packs = installed_packs(args.custom_nodes, warnings)
+    runtime = read_json(args.runtime_state, warnings)
+    if isinstance(runtime, dict) and runtime.get("schema") != 2:
+        warnings.append(
+            "Runtime state uses an older schema; ComfyUI may not have finished "
+            "starting after its most recent image update."
+        )
     state = {
         "schema_version": 1,
         "capture_id": f"{captured_at.strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:12]}",
         "captured_at": captured_at.isoformat(),
         "source": "pre-restic-backup",
         "deployment": deployment_state(args.repository, args.compose_files, warnings),
-        "runtime": read_json(args.runtime_state, warnings),
+        "runtime": runtime,
         "node_packs": node_packs,
         "node_pack_count": len(node_packs),
         "warnings": warnings,
