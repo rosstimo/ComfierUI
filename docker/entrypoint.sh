@@ -237,7 +237,7 @@ except Exception:
     torch_cuda_build = "unknown"
 
 state = {
-    "schema": 1,
+    "schema": 2,
     "generated_utc": datetime.now(timezone.utc).isoformat(),
     "source": "running-comfyui-container",
     "comfyui": {
