@@ -57,6 +57,7 @@ RUN if ! getent group "${PGID}" >/dev/null; then \
 RUN git clone "${COMFYUI_REPO}" /opt/ComfyUI \
     && cd /opt/ComfyUI \
     && git checkout "${COMFYUI_REF}" \
+    && git config --system --add safe.directory /opt/ComfyUI \
     && git rev-parse HEAD > /opt/comfyui-commit
 
 RUN python3 -m venv /opt/venv \
