@@ -75,8 +75,14 @@ else
     echo "SKIP  supplemental YAML parse (PyYAML not installed)"
 fi
 
-if find . \( -type d -name __pycache__ -o -type f -name '*.pyc' \) -print -quit | grep -q .; then
-    echo "FAIL  Python cache artifacts found" >&2
+# Runtime trees such as data/custom_nodes legitimately accumulate Python bytecode.
+# Only cache artifacts tracked by Git can accidentally become part of a
+# ComfierUI release, so keep this check scoped to repository content.
+if git ls-files | grep -E '(^|/)__pycache__(/|$)|\.pyc
+
+echo "Validation passed."
+ >/dev/null; then
+    echo "FAIL  Git-tracked Python cache artifacts found" >&2
     exit 1
 fi
 
