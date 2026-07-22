@@ -56,6 +56,56 @@ require_backup_running() {
     fi
 }
 
+wait_for_comfyui_ready() {
+    local container_id health_status timeout_seconds deadline
+
+    container_id="$(docker compose ps -q comfyui 2>/dev/null || true)"
+    [[ -n "${container_id}" ]] || return 0
+
+    timeout_seconds="$(env_get COMFYUI_BACKUP_READY_TIMEOUT_SECONDS 300)"
+    if [[ ! "${timeout_seconds}" =~ ^[0-9]+$ ]]; then
+        echo "WARNING: COMFYUI_BACKUP_READY_TIMEOUT_SECONDS is invalid; using 300 seconds." >&2
+        timeout_seconds=300
+    fi
+
+    health_status="$(
+        docker inspect \
+            --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+            "${container_id}" 2>/dev/null || echo unknown
+    )"
+    case "${health_status}" in
+        healthy|none) return 0 ;;
+        starting)
+            echo "Waiting for ComfyUI startup to finish before capturing backup state..."
+            ;;
+        *)
+            echo "WARNING: ComfyUI health is ${health_status}; runtime state may be incomplete." >&2
+            return 1
+            ;;
+    esac
+
+    deadline=$((SECONDS + timeout_seconds))
+    while (( SECONDS < deadline )); do
+        sleep 2
+        health_status="$(
+            docker inspect \
+                --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+                "${container_id}" 2>/dev/null || echo unknown
+        )"
+        case "${health_status}" in
+            healthy|none) return 0 ;;
+            starting) ;;
+            *)
+                echo "WARNING: ComfyUI health became ${health_status}; runtime state may be incomplete." >&2
+                return 1
+                ;;
+        esac
+    done
+
+    echo "WARNING: ComfyUI did not become healthy within ${timeout_seconds} seconds; runtime state may be incomplete." >&2
+    return 1
+}
+
 backup_command() {
     docker compose exec -T backup \
         /bin/sh /usr/local/bin/comfierui-backup "$@"
@@ -70,6 +120,7 @@ run_consistent_manual_backup() {
 
     if comfyui_running; then
         was_running=true
+        wait_for_comfyui_ready || true
         echo "Stopping ComfyUI for a consistent manual backup..."
         docker compose stop comfyui
     fi
