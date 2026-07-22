@@ -9,9 +9,21 @@ for script in docker/*.sh scripts/*.sh; do
 done
 echo "PASS  shell syntax"
 
-python3 -m py_compile scripts/audit-workflows.py
-rm -rf scripts/__pycache__
+python3 - <<'PY'
+from pathlib import Path
+
+for filename in (
+    "docker/capture-state.py",
+    "scripts/audit-workflows.py",
+    "scripts/comfierui_node_pack_doctor.py",
+):
+    source = Path(filename).read_text(encoding="utf-8")
+    compile(source, filename, "exec")
+PY
 echo "PASS  Python syntax"
+
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
+echo "PASS  Python tests"
 
 work_env="$(mktemp)"
 trap 'rm -f "${work_env}"' EXIT

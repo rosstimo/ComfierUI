@@ -77,10 +77,10 @@ Check Docker, Compose, permissions, disk space, and GPU container access:
 bash scripts/preflight.sh
 ```
 
-Build ComfyUI:
+Build ComfyUI and the isolated backup helper:
 
 ```bash
-docker compose build --pull comfyui
+docker compose build --pull comfyui backup
 ```
 
 Start it:
@@ -233,6 +233,7 @@ With no other backup overrides, the defaults are:
 - retention: latest 3, daily 7, weekly 4, monthly 12, yearly 3
 - included: local deployment configuration, custom nodes, user/Manager state, workflows
 - excluded by default: input, output, models, extra models, Python volume
+- captured before every snapshot: node-pack Git/Registry state and deterministic source hashes
 
 Models can be enabled or selectively protected when they are private, modified,
 gated, obscure, or otherwise difficult to replace. They default off because of
@@ -251,6 +252,12 @@ Check backup status:
 bash scripts/backup.sh status
 ```
 
+Show the manifest captured for the last backup:
+
+```bash
+bash scripts/backup.sh state
+```
+
 Create a consistent manual snapshot:
 
 ```bash
@@ -265,6 +272,10 @@ bash scripts/backup.sh list
 
 Copy `./backups/restic-password` to a separate safe location. A same-disk local
 backup does not protect against loss of the entire disk or machine.
+
+The current pre-backup manifest is available at `./backups/state/current.json`.
+Restic preserves its history and tags each snapshot with the manifest's capture
+ID.
 
 See [Backup and restore](docs/BACKUP_RESTORE.md) for retention overrides,
 include/exclude policy, models, offsite options, rollback, and disaster recovery.
@@ -402,7 +413,7 @@ bash scripts/preflight.sh
 Build:
 
 ```bash
-docker compose build --pull comfyui
+docker compose build --pull comfyui backup
 ```
 
 Start:

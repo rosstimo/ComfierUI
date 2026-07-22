@@ -28,7 +28,7 @@ The backup service uses restic and writes an encrypted repository to the host-vi
 ./backups/
 ├── restic/           # encrypted restic repository
 ├── restore/          # optional plaintext staged snapshot copies
-├── state/            # scheduler and recovery-blueprint state
+├── state/            # scheduler state plus current.json and recovery blueprint
 └── restic-password   # generated repository password
 ```
 
@@ -196,12 +196,31 @@ The blueprint records information such as:
 - base image and build identity,
 - Manager settings,
 - backup coverage and fine-grained policy,
-- custom-node names and Git commits when detectable,
+- every installed node pack's directory, enabled state, install type, exact Git
+  commit and dirty state when available, Registry ID/version when detectable,
+  and deterministic source-content hash,
 - installed Python package inventory,
 - writable and extra-model file inventories,
 - input and output file inventories.
 
-The running ComfyUI container writes authoritative runtime/build state. The recovery blueprint consumes that state instead of guessing effective versions from `.env`.
+Immediately before restic starts reading files, the backup process atomically
+replaces `backups/state/current.json`. Registry installs record their installed
+version. Git/nightly installs record their full commit, branch, tags, sanitized
+remote, dirty-file list, and submodule state. Every pack also gets a deterministic
+source-content hash, which covers archive/manual installs that have no `.git`.
+
+Manager does not always retain whether a Registry version was chosen explicitly
+or arrived through `latest`. The manifest records that selection as unknown
+rather than guessing. An installed Git checkout with Manager's CNR marker can be
+identified as `nightly`.
+
+The state capture ID is also added to the restic snapshot as a
+`state:CAPTURE_ID` tag. A shared backup lock prevents a scheduled backup and a
+manual backup from capturing or writing snapshots simultaneously.
+
+The running ComfyUI container writes authoritative runtime/build state. The
+recovery blueprint consumes that state instead of guessing effective versions
+from `.env`.
 
 Inventories are a roadmap, not proof that excluded files are stored in restic. See [Recovery blueprint](RECOVERY_BLUEPRINT.md).
 
@@ -217,7 +236,9 @@ COMFYUI_BACKUP_KEEP_MONTHLY=12
 COMFYUI_BACKUP_KEEP_YEARLY=3
 ```
 
-Retention is grouped by restic host and tag so changing the selected source list does not accidentally split one deployment into unrelated retention histories.
+Retention first selects snapshots by the stable configured backup tag, then
+groups them by restic host. The unique `state:CAPTURE_ID` tag therefore does not
+split every snapshot into its own retention group.
 
 Successful scheduled backups and `maintenance` apply retention and pruning.
 
@@ -231,6 +252,7 @@ Restic deduplicates unchanged content between snapshots.
 bash scripts/backup.sh status
 bash scripts/backup.sh now
 bash scripts/backup.sh list
+bash scripts/backup.sh state
 bash scripts/backup.sh inspect SNAPSHOT
 bash scripts/backup.sh stage SNAPSHOT
 bash scripts/backup.sh restore SNAPSHOT
@@ -263,6 +285,15 @@ Lists available snapshots and IDs:
 
 ```bash
 bash scripts/backup.sh list
+```
+
+### `state`
+
+Pretty-prints `backups/state/current.json`, the manifest captured immediately
+before the most recent successful or attempted snapshot:
+
+```bash
+bash scripts/backup.sh state
 ```
 
 ### `inspect`
@@ -412,6 +443,11 @@ If `COMFYUI_IMAGE_TAG` is unset, `recover.sh` automatically assigns a recovery-s
 
 The scheduled backup sidecar performs a live backup. It intentionally has no Docker socket and cannot stop ComfyUI.
 
+Both scheduled and manual built-in backups run the same mandatory state capture
+as part of the backup operation. There is no separate state timer and no growing
+set of local dated manifests. Restic retains historical `current.json` versions
+inside its snapshots.
+
 Avoid installing or updating custom nodes during a known automatic backup run when you want the cleanest possible consistency boundary.
 
 For an especially important known-good point, use:
@@ -469,6 +505,9 @@ systemd/*.example
 ```
 
 These are advanced integration examples, not requirements for the built-in backup service.
+
+`scripts/restic-backup.sh` also creates an atomic state manifest before invoking
+host restic, so the advanced path retains the same node-pack identity evidence.
 
 External backup configuration, credentials, password files, repositories, and restored data should remain outside Git.
 

@@ -15,6 +15,7 @@ Normal built-in backup commands:
   now                    Stop ComfyUI if running, run an immediate backup,
                          then restart ComfyUI
   list                   List available backup snapshots
+  state                  Show the state manifest captured for the last backup
   inspect SNAPSHOT [PATH]
                          List files in a snapshot, optionally below PATH
   stage [SNAPSHOT]       Extract a snapshot to ./backups/restore for inspection
@@ -518,6 +519,15 @@ case "${command}" in
     list)
         require_backup_running
         backup_command snapshots
+        ;;
+    state)
+        state_file="$(backup_host_path)/state/current.json"
+        if [[ ! -r "${state_file}" ]]; then
+            echo "ERROR: No backup state manifest exists yet: ${state_file}" >&2
+            echo "Run 'bash scripts/backup.sh now' or wait for the first scheduled backup." >&2
+            exit 1
+        fi
+        python3 -m json.tool "${state_file}"
         ;;
     inspect)
         require_backup_running

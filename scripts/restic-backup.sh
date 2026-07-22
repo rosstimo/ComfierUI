@@ -74,8 +74,28 @@ add_optional() {
 }
 
 container_id="$(docker compose ps -q comfyui 2>/dev/null || true)"
+
+state_manifest="${staging}/state/current.json"
+python3 "${repo_root}/docker/capture-state.py" \
+    --output "${state_manifest}" \
+    --custom-nodes "${data_path}/custom_nodes" \
+    --runtime-state "${data_path}/user/.comfierui/runtime-state.json" \
+    --repository "${repo_root}" \
+    --compose-files "$(env_get COMPOSE_FILE compose.yaml)" \
+    >/dev/null
+state_capture_id="$(python3 - "${state_manifest}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as state_file:
+    print(json.load(state_file)["capture_id"])
+PY
+)"
+add_required "${state_manifest}"
+
 {
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'state_capture_id=%s\n' "${state_capture_id}"
     printf 'deployment_git_head=%s\n' "$(git rev-parse HEAD 2>/dev/null || echo unavailable)"
     printf 'deployment_git_dirty=%s\n' "$(git status --porcelain 2>/dev/null | grep -q . && echo yes || echo no)"
     printf 'compose_project=%s\n' "$(env_get COMPOSE_PROJECT_NAME comfierui)"
@@ -158,6 +178,7 @@ restic backup \
     --files-from-verbatim "${source_list}" \
     --exclude-file "${exclude_file}" \
     --exclude-caches \
-    --tag "${backup_tag}"
+    --tag "${backup_tag}" \
+    --tag "state:${state_capture_id}"
 
 echo "Backup complete. Run scripts/restic-maintenance.sh on a separate schedule."

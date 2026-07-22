@@ -2,9 +2,15 @@
 
 ## Trust model
 
-Custom nodes execute Python code. They can read and modify every mounted model,
-workflow, input, output, user, custom-node, cache, and home path. A container
-boundary reduces host exposure but does not make an untrusted extension safe.
+Custom nodes execute Python code. They can modify the internal ComfyUI
+application tree and every mounted model, workflow, input, output, user,
+custom-node, cache, home, and Python-environment path. A container boundary
+reduces host exposure but does not make an untrusted extension safe.
+
+Blocking writes to one application subdirectory provides little protection once
+arbitrary node Python is trusted to run, while it breaks packs that work in
+normal local installations. ComfierUI therefore keeps the meaningful boundary
+at the non-root container and its explicit mounts.
 
 ## Defaults
 

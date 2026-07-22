@@ -22,7 +22,12 @@ services:
         target: /python
 
   backup:
-    image: "restic/restic:${COMFYUI_BACKUP_RESTIC_VERSION:-0.19.1}"
+    image: "${COMFYUI_BACKUP_IMAGE_REPOSITORY:-local/comfierui-backup}:${COMFYUI_BACKUP_IMAGE_TAG:-latest}"
+    build:
+      context: .
+      dockerfile: docker/backup.Dockerfile
+      args:
+        RESTIC_VERSION: "${COMFYUI_BACKUP_RESTIC_VERSION:-0.19.1}"
     init: true
     restart: "${COMFYUI_BACKUP_RESTART_POLICY:-unless-stopped}"
     user: "${PUID:-1000}:${PGID:-1000}"
@@ -123,6 +128,12 @@ services:
       - type: bind
         source: ./docker/recovery-blueprint.sh
         target: /usr/local/bin/comfierui-recovery-blueprint
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./docker/capture-state.py
+        target: /usr/local/bin/comfierui-capture-state
         read_only: true
         bind:
           create_host_path: false

@@ -122,6 +122,7 @@ host with an RTX 4060 Ti, including:
 - encrypted restic snapshots and retention behavior,
 - live same-host rollback,
 - recovery blueprint/runtime-state capture,
+- atomic pre-backup state capture with node-pack Git, Registry, and content identities,
 - selective restore behavior,
 - fresh-clone reconstruction,
 - exact ComfyUI commit recovery,
