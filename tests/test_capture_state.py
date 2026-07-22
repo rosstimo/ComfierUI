@@ -31,11 +31,14 @@ def initialize_git(path: Path, filename: str = "node.py") -> None:
 
 
 class CaptureStateTests(unittest.TestCase):
-    def run_capture(self, root: Path) -> dict:
+    def run_capture(self, root: Path, runtime_schema: int = 2) -> dict:
         output = root / "backups" / "state" / "current.json"
         runtime_state = root / "data" / "user" / ".comfierui" / "runtime-state.json"
         runtime_state.parent.mkdir(parents=True, exist_ok=True)
-        runtime_state.write_text('{"comfyui": {"commit": "abc123"}}\n', encoding="utf-8")
+        runtime_state.write_text(
+            json.dumps({"schema": runtime_schema, "comfyui": {"commit": "abc123"}}) + "\n",
+            encoding="utf-8",
+        )
         (root / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
 
         subprocess.run(
@@ -142,6 +145,15 @@ Repository = "https://example.com/owner/registry-pack"
             self.assertNotEqual(first_hash, second_hash)
             state_dir = root / "backups" / "state"
             self.assertEqual(["current.json"], sorted(path.name for path in state_dir.iterdir()))
+
+    def test_warns_when_runtime_state_predates_current_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            initialize_git(root, "README.md")
+
+            state = self.run_capture(root, runtime_schema=1)
+
+            self.assertTrue(any("older schema" in warning for warning in state["warnings"]))
 
 
 if __name__ == "__main__":
