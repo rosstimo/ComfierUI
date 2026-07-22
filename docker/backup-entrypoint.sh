@@ -32,6 +32,8 @@ restore_root=/backups/restore
 password_file="${RESTIC_PASSWORD_FILE:-/backups/restic-password}"
 last_success_file="${state_dir}/last-success-epoch"
 manifest_file="${state_dir}/recovery-manifest.txt"
+state_manifest_file="${state_dir}/current.json"
+backup_lock_file="${state_dir}/backup.lock"
 blueprint_dir="${state_dir}/recovery-blueprint"
 include_file="${COMFYUI_BACKUP_INCLUDE_FILE:-/config/backup-includes.txt}"
 exclude_file="${COMFYUI_BACKUP_EXCLUDE_FILE:-/config/backup-excludes.txt}"
@@ -91,9 +93,24 @@ add_configured_sources() {
     done < "${include_file}"
 }
 
+capture_state() {
+    log "Capturing current ComfierUI and node-pack state."
+    python3 /usr/local/bin/comfierui-capture-state \
+        --output "${state_manifest_file}" \
+        --custom-nodes /source/data/custom_nodes \
+        --runtime-state /source/data/user/.comfierui/runtime-state.json \
+        --repository /source/repo \
+        --compose-files "${COMFYUI_BACKUP_COMPOSE_FILES:-compose.yaml}" \
+        >/dev/null
+
+    state_capture_id="$(jq -er '.capture_id' "${state_manifest_file}")"
+    log "State capture complete: ${state_capture_id}"
+}
+
 write_manifest() {
     cat > "${manifest_file}" <<EOF
 created_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+state_capture_id=${state_capture_id}
 backup_tag=${backup_tag}
 compose_files=${COMFYUI_BACKUP_COMPOSE_FILES:-compose.yaml}
 include_config=${COMFYUI_BACKUP_INCLUDE_CONFIG:-true}
@@ -112,8 +129,10 @@ EOF
 build_source_list() {
     source_list="$1"
     : > "${source_list}"
+    capture_state
     write_manifest
     add_source "${source_list}" "${manifest_file}" true
+    add_source "${source_list}" "${state_manifest_file}" true
 
     /bin/sh /usr/local/bin/comfierui-recovery-blueprint "${blueprint_dir}"
     add_source "${source_list}" "${blueprint_dir}" true
@@ -185,7 +204,7 @@ apply_retention() {
     log "Applying retention: last=${keep_last}, daily=${keep_daily}, weekly=${keep_weekly}, monthly=${keep_monthly}, yearly=${keep_yearly}"
     restic forget \
         --tag "${backup_tag}" \
-        --group-by host,tags \
+        --group-by host \
         --keep-last "${keep_last}" \
         --keep-daily "${keep_daily}" \
         --keep-weekly "${keep_weekly}" \
@@ -194,7 +213,12 @@ apply_retention() {
         --prune
 }
 
-run_backup() {
+run_backup() (
+    if ! flock -n 9 9>"${backup_lock_file}"; then
+        log "ERROR: Another backup or state capture is already running."
+        return 1
+    fi
+
     apply_retention_after="${1:-true}"
     source_list="$(mktemp)"
     trap 'rm -f "${source_list}"' INT TERM HUP EXIT
@@ -214,8 +238,9 @@ run_backup() {
     set -- backup \
         --files-from-verbatim "${source_list}" \
         --tag "${backup_tag}" \
+        --tag "state:${state_capture_id}" \
         --host comfierui \
-        --group-by host,tags
+        --group-by host
 
     if [ -r "${exclude_file}" ]; then
         set -- "$@" --exclude-file "${exclude_file}"
@@ -236,7 +261,7 @@ run_backup() {
 
     rm -f "${source_list}"
     trap - INT TERM HUP EXIT
-}
+)
 
 resolve_latest_snapshot() {
     restic snapshots --tag "${backup_tag}" --json \

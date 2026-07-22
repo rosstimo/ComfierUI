@@ -207,6 +207,14 @@ def package_version(name: str) -> str:
         return "unknown"
 
 
+def first_package_version(*names: str) -> str:
+    for name in names:
+        version = package_version(name)
+        if version != "unknown":
+            return version
+    return "unknown"
+
+
 def as_bool(value: str) -> bool:
     return value.lower() in {"1", "true", "yes", "on"}
 
@@ -229,7 +237,7 @@ except Exception:
     torch_cuda_build = "unknown"
 
 state = {
-    "schema": 1,
+    "schema": 2,
     "generated_utc": datetime.now(timezone.utc).isoformat(),
     "source": "running-comfyui-container",
     "comfyui": {
@@ -249,6 +257,7 @@ state = {
     },
     "runtime": {
         "python": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+        "comfyui": first_package_version("comfyui"),
         "torch": package_version("torch"),
         "torchvision": package_version("torchvision"),
         "torchaudio": package_version("torchaudio"),
@@ -257,8 +266,10 @@ state = {
         "accelerator": accelerator,
         "uid": os.getuid(),
         "gid": os.getgid(),
+        "application_tree_writable": os.access("/opt/ComfyUI", os.W_OK),
     },
     "manager": {
+        "version": first_package_version("comfyui-manager", "comfyui_manager"),
         "enabled": as_bool(manager_enabled),
         "legacy_ui": as_bool(legacy_manager_ui),
         "security_level": manager_security_level,

@@ -16,6 +16,11 @@ The container uses:
 - `COMFYUI_SHARED_GID` as one supplementary numeric group,
 - umask `0002` so newly created shared files normally retain group write access.
 
+Inside the container, that non-root identity owns `/opt/ComfyUI`. This permits
+the same application-local writes that many ordinary desktop installations
+permit, including legacy node-pack frontend installers. The ownership change is
+inside the image and does not broaden the host mounts.
+
 ## Existing external libraries
 
 Initialization leaves existing directories and ownership untouched. Diagnose
@@ -123,6 +128,11 @@ docker compose exec comfyui id
 ```bash
 docker compose exec comfyui sh -lc \
   'test -w /opt/ComfyUI/custom_nodes && echo custom_nodes-writable'
+```
+
+```bash
+docker compose exec comfyui sh -lc \
+  'test -w /opt/ComfyUI && echo application-tree-writable'
 ```
 
 ```bash

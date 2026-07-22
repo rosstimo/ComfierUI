@@ -68,6 +68,8 @@ workflows, models, and image files.
 
 Verify:
 
+- an immediate manual backup after container recreation waits for ComfyUI to
+  become healthy and captures the new runtime-state schema,
 - automatic encrypted backup creation,
 - manual consistent snapshots,
 - snapshot listing and inspection,
@@ -122,6 +124,7 @@ host with an RTX 4060 Ti, including:
 - encrypted restic snapshots and retention behavior,
 - live same-host rollback,
 - recovery blueprint/runtime-state capture,
+- atomic pre-backup state capture with node-pack Git, Registry, and content identities,
 - selective restore behavior,
 - fresh-clone reconstruction,
 - exact ComfyUI commit recovery,

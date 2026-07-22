@@ -37,14 +37,19 @@ The blueprint contains:
 - Manager behavior settings,
 - backup include/exclude coverage,
 - effective fine-grained include and exclude policy,
-- custom-node directory names and Git commits when detectable,
+- custom-node directory names, enabled state, installation source, exact Git
+  state or Registry version, and deterministic source-content hashes,
 - installed Python package names and versions,
 - writable model-library filenames and sizes,
 - extra/legacy model-library filenames and sizes when configured,
 - input filenames and sizes,
 - output filenames and sizes.
 
-The running ComfyUI container writes its effective build/runtime state into the persistent user tree. The backup service copies that record into the blueprint. Recovery therefore uses actual container state instead of inferring effective versions from `.env`.
+The running ComfyUI container writes its effective build/runtime state into the
+persistent user tree. Immediately before each restic snapshot, the backup service
+also atomically captures the deployment and all installed node packs. Recovery
+therefore uses observed state instead of inferring effective versions from
+`.env` or a floating `latest` label.
 
 ## Blueprint files
 
@@ -52,6 +57,7 @@ A snapshot recovery blueprint contains files such as:
 
 ```text
 state.env
+current-state.json
 container-state.json
 backup-includes.txt
 backup-excludes.txt
@@ -64,13 +70,33 @@ output-files.tsv
 README.txt
 ```
 
-`container-state.json` is the most detailed machine-readable record of the running core environment.
+The snapshot also contains `/backups/state/current.json`; the blueprint copy is
+named `current-state.json`. It records a unique capture ID, deployment Git state,
+Compose-file hashes, the running-container state, and one structured entry for
+each installed node pack.
+
+For Git packs, the entry includes the full commit, branch or detached state,
+tags, sanitized origin URL, dirty status and changed-file list, submodules, and a
+source-content hash. Git hashes cover tracked and unignored files; archive and
+manual-pack hashes exclude runtime caches such as `__pycache__`, `.venv`, and
+`node_modules`. Registry packages are recognized by Manager's `.tracking` file and
+their `pyproject.toml` ID/version. Manual directories and single-file nodes still
+receive a content hash.
+
+The selected Manager channel is recorded only when installation evidence makes
+it knowable. In particular, an unpacked Registry package proves the installed
+version but usually cannot prove whether the user selected that version or
+selected `latest`.
+
+`container-state.json` is the detailed machine-readable record of the running
+core environment.
 
 The `*.tsv` inventories are recovery roadmaps. They are not proof that the corresponding payload was backed up.
 
 Model files are not hashed by default. Hashing a very large model library would require reading every byte and could turn a lightweight backup into an expensive full-disk verification job.
 
-Custom-node remote URLs are not recorded by default because Git remotes can occasionally contain embedded credentials. The backed-up node code and commit inventory are sufficient for the normal recovery workflow.
+Custom-node Git remotes are recorded for provenance, but HTTP(S) user information
+is removed first. The capture adds a warning when it redacts such a remote.
 
 ## Portable state versus host-local state
 

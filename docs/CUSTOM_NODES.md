@@ -90,8 +90,18 @@ Manager changes three persistent areas:
 - Python packages under the `comfyui-python` named volume.
 
 An optional `COMFYUI_EXTRA_MODELS_PATH` library is separate and read-only by
-default. All writable Manager-managed areas survive a normal image rebuild.
-ComfyUI core itself is image-owned and is updated by rebuilding, not by Manager.
+default. These mounted Manager-managed areas survive a normal image rebuild.
+
+Manager and node packs may also write elsewhere inside `/opt/ComfyUI`, just as
+they can in a typical local installation. ComfierUI permits those writes so
+legacy installers can work, but unmounted application-tree changes disappear on
+container recreation. Durable ComfyUI core updates still come from rebuilding
+the pinned image.
+
+ComfierUI does not carry private compatibility patches for third-party packs.
+The node-pack doctor and backup state report observed versions, import failures,
+and unusual behavior. A broken pack is then handled with its upstream project,
+a user-maintained fork, or another case-specific decision.
 
 ## Installing nodes
 

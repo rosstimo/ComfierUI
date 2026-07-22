@@ -53,8 +53,10 @@ the intended owner/group model is understood.
 
 ## `Failed to fetch ComfyUI`
 
-Core ComfyUI is image-owned. Manager cannot update it in place. Use
-`scripts/update.sh`. Custom-node installation can still work.
+The internal ComfyUI tree is writable, but the durable core version still comes
+from the image. Use `scripts/update.sh` for a persistent core update. A Manager
+core update may work in the current container layer and then disappear when the
+container is recreated; custom-node installation is independently persistent.
 
 ## Hardlink warnings from `uv`
 

@@ -74,6 +74,10 @@ RUN python3 -m venv /opt/venv \
 
 # Keep authoritative build inputs inside the image. The running container combines
 # these with the actual installed runtime state and persists a recovery record.
+# Custom nodes execute with ComfyUI's identity and some still use legacy installers
+# that write below the application tree. Match a normal local installation by making
+# that internal tree writable to the non-root runtime identity. Host exposure remains
+# limited to the explicit Compose mounts.
 RUN printf 'BASE_IMAGE=%s\nCOMFYUI_REF=%s\nPYTORCH_BUILD_VERSION=%s\nTORCHVISION_BUILD_VERSION=%s\nTORCHAUDIO_BUILD_VERSION=%s\nTORCH_INDEX_URL=%s\nCOMFYUI_COMMIT=%s\n' \
         "${BASE_IMAGE}" \
         "${COMFYUI_REF}" \
@@ -108,7 +112,7 @@ RUN printf 'BASE_IMAGE=%s\nCOMFYUI_REF=%s\nPYTORCH_BUILD_VERSION=%s\nTORCHVISION
         /opt/ComfyUI/output \
         /opt/ComfyUI/temp \
         /opt/ComfyUI/user/default/workflows \
-    && chown -R "${PUID}:${PGID}" /data /opt/venv
+    && chown -R "${PUID}:${PGID}" /data /opt/ComfyUI /opt/venv
 
 COPY --chmod=0755 docker/entrypoint.sh /usr/local/bin/comfierui-entrypoint
 COPY --chmod=0755 docker/entrypoint-wrapper.sh /usr/local/bin/comfierui-entrypoint-wrapper

@@ -4,8 +4,10 @@
 
 ComfierUI divides the deployment into three kinds of state:
 
-1. **Reproducible image state:** ComfyUI core, Python, pinned PyTorch packages,
-   system libraries, and core Manager requirements.
+1. **Reproducible application state:** the image supplies ComfyUI core, pinned
+   PyTorch packages, system libraries, and core Manager requirements. The
+   internal `/opt/ComfyUI` tree is writable at runtime for node compatibility,
+   but is recreated from the image with the container.
 2. **Portable mutable state:** bind-mounted models, workflows, custom nodes,
    user data, inputs, outputs, caches, and home directory.
 3. **Mutable dependency state:** the `comfyui-python` named volume, which starts
@@ -39,7 +41,8 @@ the active order. Later files override or extend earlier files.
    choices.
 6. At startup, the named venv volume is refreshed only when the image build ID
    changes.
-7. ComfyUI starts as the configured numeric non-root UID/GID.
+7. The image-owned ComfyUI tree is assigned to the configured runtime identity.
+8. ComfyUI starts as that numeric non-root UID/GID.
 
 ## Persistent state
 
@@ -55,12 +58,18 @@ the active order. Later files override or extend earlier files.
 | Temp | `data/temp` | Disposable |
 | Custom-node Python venv | named volume | Optional but useful |
 
-## Core update boundary
+## Runtime compatibility boundary
 
-`/opt/ComfyUI` is image-owned. Manager may say it cannot fetch or update ComfyUI
-core. That is expected. Use `scripts/update.sh` or an explicit rebuild.
+The non-root ComfyUI identity can write throughout `/opt/ComfyUI`. This mirrors a
+normal local installation closely enough for Manager and older node packs that
+create legacy frontend files or other application-local artifacts. It does not
+grant root, privileged mode, a Docker socket, or access to undeclared host paths.
 
-Custom nodes remain Manager-writable because their bind mount is separate.
+Bind-mounted custom nodes, user data, models, inputs, outputs, workflows, and the
+named Python volume persist. Writes elsewhere in `/opt/ComfyUI` belong to the
+container layer and disappear when that container is recreated. ComfierUI core
+updates therefore remain image rebuilds through `scripts/update.sh`; Manager may
+temporarily change core files, but those changes are not the durable update path.
 
 ## Deliberate omissions
 

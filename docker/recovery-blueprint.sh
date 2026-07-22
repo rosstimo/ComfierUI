@@ -3,6 +3,7 @@ set -eu
 
 output_dir="${1:-/backups/state/recovery-blueprint}"
 runtime_state=/source/data/user/.comfierui/runtime-state.json
+current_state=/backups/state/current.json
 rm -rf "${output_dir}"
 mkdir -p "${output_dir}"
 
@@ -77,12 +78,24 @@ else
     printf '{}\n' > "${output_dir}/container-state.json"
 fi
 
+current_state_present=false
+state_capture_id=unknown
+if [ -r "${current_state}" ]; then
+    cp "${current_state}" "${output_dir}/current-state.json"
+    current_state_present=true
+    state_capture_id="$(jq -r '.capture_id // "unknown"' "${current_state}")"
+else
+    printf '{}\n' > "${output_dir}/current-state.json"
+fi
+
 cat > "${output_dir}/state.env" <<EOF
-blueprint_schema=2
+blueprint_schema=3
 created_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+state_capture_id=${state_capture_id}
 repository_commit=${repo_commit:-unknown}
 compose_files=${COMFYUI_BACKUP_COMPOSE_FILES:-compose.yaml}
 container_state_present=${container_state_present}
+current_state_present=${current_state_present}
 COMFYUI_COMMIT=$(json_string '.comfyui.commit')
 COMFYUI_GIT_DESCRIBE=$(json_string '.comfyui.git_describe')
 COMFYUI_REF=$(json_string '.comfyui.configured_ref_at_build')
@@ -118,6 +131,7 @@ This directory describes the known state at backup time, including reproducible
 or large items that may not be stored in the backup payload itself.
 
 state.env             Compact recovery summary and backup coverage.
+current-state.json    Pre-backup state, including exact custom-node identities.
 container-state.json  Authoritative build/runtime state reported by ComfyUI.
 backup-includes.txt   Effective custom additional-source policy for this snapshot.
 backup-excludes.txt   Effective restic exclusion policy for this snapshot.
@@ -128,9 +142,12 @@ extra-models.tsv      Extra/legacy model-library inventory when mounted for inve
 input-files.tsv       Input file inventory, even when input files are excluded.
 output-files.tsv      Output file inventory, even when output files are excluded.
 
-The container state is written by the ComfyUI container itself from its baked
-build metadata and actual installed runtime packages. The blueprint does not use
-.env as the authority for effective ComfyUI or PyTorch versions.
+The current state is captured immediately before restic reads backup sources. It
+records Git commits when present, Registry package versions when detectable, and
+a deterministic content hash for every installed node pack. The container state
+is written by ComfyUI from its baked build metadata and installed runtime
+packages. The blueprint does not use .env as the authority for effective core or
+PyTorch versions.
 
 Inventories are a recovery roadmap, not proof that excluded files are recoverable.
 Model files are not hashed by default because hashing very large libraries would
