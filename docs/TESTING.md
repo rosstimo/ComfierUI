@@ -68,6 +68,8 @@ workflows, models, and image files.
 
 Verify:
 
+- an immediate manual backup after container recreation waits for ComfyUI to
+  become healthy and captures the new runtime-state schema,
 - automatic encrypted backup creation,
 - manual consistent snapshots,
 - snapshot listing and inspection,
